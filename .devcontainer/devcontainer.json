@@ -12,7 +12,8 @@
   "containerEnv": {
     "NVIDIA_VISIBLE_DEVICES": "all",
     "NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
-    "TF_FORCE_GPU_ALLOW_GROWTH": "true"
+    "TF_FORCE_GPU_ALLOW_GROWTH": "true",
+    "LD_LIBRARY_PATH": "/opt/venvs/.venv/lib/python3.11/site-packages/nvidia/cusolver/lib:/opt/venvs/.venv/lib/python3.11/site-packages/nvidia/cublas/lib:/opt/venvs/.venv/lib/python3.11/site-packages/nvidia/cudnn/lib:/opt/venvs/.venv/lib/python3.11/site-packages/nvidia/cufft/lib:/opt/venvs/.venv/lib/python3.11/site-packages/nvidia/curand/lib:/opt/venvs/.venv/lib/python3.11/site-packages/nvidia/cusparse/lib:/opt/venvs/.venv/lib/python3.11/site-packages/nvidia/nccl/lib:/opt/venvs/.venv/lib/python3.11/site-packages/nvidia/nvjitlink/lib:/opt/venvs/.venv/lib/python3.11/site-packages/nvidia/cuda_runtime/lib:/opt/venvs/.venv/lib/python3.11/site-packages/nvidia/cuda_cupti/lib:/opt/venvs/.venv/lib/python3.11/site-packages/nvidia/cuda_nvrtc/lib"
   },
   "mounts": [
     "source=slm-venvs,target=/opt/venvs,type=volume"
