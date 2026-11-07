@@ -150,7 +150,8 @@ def main(argv: list[str] | None = None) -> int:
         f"epoch {progress['completed_epochs']}/{progress['target_epochs']}, "
         f"vector_dim={stats['vector_dim']}, vocab_size={stats['vocab_size']}, "
         f"loss={stats['latest_loss']}, perplexity={stats['latest_perplexity']}, "
-        f"accuracy={stats['latest_accuracy']} ({metadata['elapsed_seconds']}s)"
+        f"accuracy={stats['latest_accuracy']}, peak_rss={stats['peak_rss_mb']}MB "
+        f"({metadata['elapsed_seconds']}s)"
     )
     return 0
 
@@ -159,12 +160,12 @@ if __name__ == "__main__":
     sys.exit(main())
 
 """
-# 新規学習の実行例 (job_id=job1234)
+# 新規学習の実行例 (job_id=job_gen2_1234)
 PYTHONPATH=impl_gen2/src/libs/nn_trainer \
 python -m nn_trainer \
-  --work-directory=/tmp/job1234/phase4_train \
-  --x-file=/tmp/job1234/phase3_featurize/x.npz \
-  --y-file=/tmp/job1234/phase3_featurize/y.npy \
+  --work-directory=/tmp/job_gen2_1234/phase4_train \
+  --x-file=/tmp/job_gen2_1234/phase3_featurize/x.npz \
+  --y-file=/tmp/job_gen2_1234/phase3_featurize/y.npy \
   --epochs=50 \
   --min-delta=0.001 \
   --patience=3
@@ -172,6 +173,6 @@ python -m nn_trainer \
 # 中断後の再開実行例 (--resume 指定時は他の引数は不要・指定されても無視して metadata.json から復元)
 PYTHONPATH=impl_gen2/src/libs/nn_trainer \
 python -m nn_trainer \
-  --work-directory=/tmp/job1234/phase4_train \
+  --work-directory=/tmp/job_gen2_1234/phase4_train \
   --resume
 """

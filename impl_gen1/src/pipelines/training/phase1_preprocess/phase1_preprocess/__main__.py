@@ -16,17 +16,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--input-directory",
         required=True,
-        help="入力データのディレクトリ (例: impl_gen1/samples/chabsa_data/origin)",
+        help="入力データのディレクトリ (例: samples/chabsa_data/data)",
     )
     parser.add_argument(
         "--out-slim-directory",
         required=True,
-        help="データ簡素化済み JSON の出力先ディレクトリ (例: /tmp/job1234/phase1_preprocess/slim)",
+        help="データ簡素化済み JSON の出力先ディレクトリ (例: /tmp/job_gen1_1234/phase1_preprocess/slim)",
     )
     parser.add_argument(
         "--out-normalized-directory",
         required=True,
-        help="データ正規化済み JSON の出力先ディレクトリ (例: /tmp/job1234/phase1_preprocess/normalized)",
+        help="データ正規化済み JSON の出力先ディレクトリ (例: /tmp/job_gen1_1234/phase1_preprocess/normalized)",
     )
     parser.add_argument(
         "--out-meta-file",
@@ -79,12 +79,12 @@ if __name__ == "__main__":
     sys.exit(main())
 
 """
-# 実行例 (job_id=job1234)
+# 実行例 (job_id=job_gen1_1234)
 PYTHONPATH=impl_gen1/src/pipelines/training/phase1_preprocess \
 python -m phase1_preprocess \
-  --input-directory=impl_gen1/samples/chabsa_data/origin \
-  --out-slim-directory=/tmp/job1234/phase1_preprocess/slim \
-  --out-normalized-directory=/tmp/job1234/phase1_preprocess/normalized \
-  --out-meta-file=/tmp/job1234/phase1_preprocess/metadata.json \
-  --out-context-file=/tmp/job1234/phase1_preprocess/context.json
+  --input-directory=samples/chabsa_data/data \
+  --out-slim-directory=/tmp/job_gen1_1234/phase1_preprocess/slim \
+  --out-normalized-directory=/tmp/job_gen1_1234/phase1_preprocess/normalized \
+  --out-meta-file=/tmp/job_gen1_1234/phase1_preprocess/metadata.json \
+  --out-context-file=/tmp/job_gen1_1234/phase1_preprocess/context.json
 """

@@ -101,14 +101,14 @@ if __name__ == "__main__":
     sys.exit(main())
 
 """
-# 実行例 (job_id=job1234)
+# 実行例 (job_id=job_gen1_1234)
 PYTHONPATH=impl_gen1/src/libs/weighted_onehot \
 python -m weighted_onehot \
-  --normalized-file=/tmp/job1234/phase1_preprocess/normalized \
-  --vocab-file=/tmp/job1234/phase2_tokenize/vocab2344/sp.vocab \
-  --out-x-file=/tmp/job1234/phase3_features/x.npz \
-  --out-y-file=/tmp/job1234/phase3_features/y.npy \
-  --out-meta-file=/tmp/job1234/phase3_features/metadata.json \
+  --normalized-file=/tmp/job_gen1_1234/phase1_preprocess/normalized \
+  --vocab-file=/tmp/job_gen1_1234/phase2_tokenize/vocab2344/sp.vocab \
+  --out-x-file=/tmp/job_gen1_1234/phase3_features/x.npz \
+  --out-y-file=/tmp/job_gen1_1234/phase3_features/y.npy \
+  --out-meta-file=/tmp/job_gen1_1234/phase3_features/metadata.json \
   --context-length=32
 """
 

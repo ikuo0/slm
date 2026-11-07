@@ -27,29 +27,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--input-context-file",
         required=True,
-        help="Phase 4 が出力した context.json のファイルパス (例: /tmp/job1234_gen2/phase4_training/context.json)",
+        help="Phase 4 が出力した context.json のファイルパス (例: /tmp/job_gen2_1234/phase4_training/context.json)",
     )
     parser.add_argument(
         "--out-texts-file",
         required=True,
-        help="生成した文章一覧の出力ファイルパス (JSON, 例: /tmp/job1234_gen2/phase5_inference/generated_texts.json)",
+        help="生成した文章一覧の出力ファイルパス (JSON, 例: /tmp/job_gen2_1234/phase5_inference/generated_texts.json)",
     )
     parser.add_argument(
         "--out-readable-file",
         "--out-text-file",
         dest="out_readable_file",
         required=True,
-        help="目視確認用テキストの出力ファイルパス (例: /tmp/job1234_gen2/phase5_inference/generated_texts.txt)",
+        help="目視確認用テキストの出力ファイルパス (例: /tmp/job_gen2_1234/phase5_inference/generated_texts.txt)",
     )
     parser.add_argument(
         "--out-meta-file",
         required=True,
-        help="メタデータの出力ファイルパス (JSON, 例: /tmp/job1234_gen2/phase5_inference/metadata.json)",
+        help="メタデータの出力ファイルパス (JSON, 例: /tmp/job_gen2_1234/phase5_inference/metadata.json)",
     )
     parser.add_argument(
         "--out-context-file",
         required=True,
-        help="context.json の出力ファイルパス (JSON, 例: /tmp/job1234_gen2/phase5_inference/context.json)",
+        help="context.json の出力ファイルパス (JSON, 例: /tmp/job_gen2_1234/phase5_inference/context.json)",
     )
 
     # 生成制御オプション (4つ + seed)
@@ -140,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         f"(vector_dim={stats['vector_dim']}, num_hashes={stats['num_hashes']}, "
         f"eos={stats['eos_stopped_count']}, max_chars={stats['max_chars_stopped_count']}, "
         f"avg_chars={stats['avg_chars']}, avg_sentences={stats['avg_sentences']}, "
-        f"{metadata['elapsed_seconds']}s)"
+        f"peak_rss={stats['peak_rss_mb']}MB, {metadata['elapsed_seconds']}s)"
     )
     print(f"texts written: {args.out_texts_file}")
     print(f"readable text written: {args.out_readable_file}")
@@ -155,11 +155,11 @@ if __name__ == "__main__":
 # 実行例1: 確率を二乗 (--prob-power=2.0) して高確率に寄せたランダム生成で 10 文書作成
 PYTHONPATH=impl_gen2/src/pipelines/training/phase5_inference \
 python -m phase5_inference \
-  --input-context-file=/tmp/job1234_gen2/phase4_training/context.json \
-  --out-texts-file=/tmp/job1234_gen2/phase5_inference/generated_texts.json \
-  --out-readable-file=/tmp/job1234_gen2/phase5_inference/generated_texts.txt \
-  --out-meta-file=/tmp/job1234_gen2/phase5_inference/metadata.json \
-  --out-context-file=/tmp/job1234_gen2/phase5_inference/context.json \
+  --input-context-file=/tmp/job_gen2_1234/phase4_training/context.json \
+  --out-texts-file=/tmp/job_gen2_1234/phase5_inference/generated_texts.json \
+  --out-readable-file=/tmp/job_gen2_1234/phase5_inference/generated_texts.txt \
+  --out-meta-file=/tmp/job_gen2_1234/phase5_inference/metadata.json \
+  --out-context-file=/tmp/job_gen2_1234/phase5_inference/context.json \
   --num-documents=10 \
   --max-chars=1000 \
   --sampling-mode=random \
@@ -168,11 +168,11 @@ python -m phase5_inference \
 # 実行例2: 素の確率ランダム (--prob-power=1.0)
 PYTHONPATH=impl_gen2/src/pipelines/training/phase5_inference \
 python -m phase5_inference \
-  --input-context-file=/tmp/job1234_gen2/phase4_training/context.json \
-  --out-texts-file=/tmp/job1234_gen2/phase5_inference/generated_texts_p1.json \
-  --out-readable-file=/tmp/job1234_gen2/phase5_inference/generated_texts_p1.txt \
-  --out-meta-file=/tmp/job1234_gen2/phase5_inference/metadata_p1.json \
-  --out-context-file=/tmp/job1234_gen2/phase5_inference/context.json \
+  --input-context-file=/tmp/job_gen2_1234/phase4_training/context.json \
+  --out-texts-file=/tmp/job_gen2_1234/phase5_inference/generated_texts_p1.json \
+  --out-readable-file=/tmp/job_gen2_1234/phase5_inference/generated_texts_p1.txt \
+  --out-meta-file=/tmp/job_gen2_1234/phase5_inference/metadata_p1.json \
+  --out-context-file=/tmp/job_gen2_1234/phase5_inference/context.json \
   --num-documents=10 \
   --max-chars=1000 \
   --sampling-mode=random \
@@ -181,11 +181,11 @@ python -m phase5_inference \
 # 実行例3: 最大確率を取り続ける (--sampling-mode=greedy) で代表 1 文書を作成
 PYTHONPATH=impl_gen2/src/pipelines/training/phase5_inference \
 python -m phase5_inference \
-  --input-context-file=/tmp/job1234_gen2/phase4_training/context.json \
-  --out-texts-file=/tmp/job1234_gen2/phase5_inference/generated_greedy.json \
-  --out-readable-file=/tmp/job1234_gen2/phase5_inference/generated_greedy.txt \
-  --out-meta-file=/tmp/job1234_gen2/phase5_inference/metadata_greedy.json \
-  --out-context-file=/tmp/job1234_gen2/phase5_inference/context.json \
+  --input-context-file=/tmp/job_gen2_1234/phase4_training/context.json \
+  --out-texts-file=/tmp/job_gen2_1234/phase5_inference/generated_greedy.json \
+  --out-readable-file=/tmp/job_gen2_1234/phase5_inference/generated_greedy.txt \
+  --out-meta-file=/tmp/job_gen2_1234/phase5_inference/metadata_greedy.json \
+  --out-context-file=/tmp/job_gen2_1234/phase5_inference/context.json \
   --num-documents=1 \
   --max-chars=1000 \
   --sampling-mode=greedy

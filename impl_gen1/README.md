@@ -22,6 +22,77 @@
     - Xデータ：単語ベクトル（32トークンの重み付き ONE-HOT 総和、語彙サイズ $V$ 次元の CSR 疎行列 `.npz`）
     - Yデータ：次の単語（33単語目の正解トークンID、1次元配列 `.npy`）
 
+## パイプライン実行例 (`phase1_preprocess` 〜 `phase5_inference`)
+
+どのディレクトリからでも一括実行できるバッチスクリプトを用意しています：
+
+```bash
+bash /workspaces/slm/impl_gen1/src/batches/run_all.sh
+```
+
+個別に実行する場合：
+
+```bash
+# Phase 1: 前処理（データ簡素化・正規化）
+PYTHONPATH=impl_gen1/src/pipelines/training/phase1_preprocess \
+python -m phase1_preprocess \
+  --input-directory=samples/chabsa_data/data \
+  --out-slim-directory=/tmp/job_gen1_1234/phase1_preprocess/slim \
+  --out-normalized-directory=/tmp/job_gen1_1234/phase1_preprocess/normalized \
+  --out-meta-file=/tmp/job_gen1_1234/phase1_preprocess/metadata.json \
+  --out-context-file=/tmp/job_gen1_1234/phase1_preprocess/context.json
+
+# Phase 2: トークン化・語彙サイズ探索
+PYTHONPATH=impl_gen1/src/pipelines/training/phase2_tokenize \
+python -m phase2_tokenize \
+  --input-context-file=/tmp/job_gen1_1234/phase1_preprocess/context.json \
+  --out-directory=/tmp/job_gen1_1234/phase2_tokenize \
+  --out-meta-file=/tmp/job_gen1_1234/phase2_tokenize/metadata.json \
+  --out-context-file=/tmp/job_gen1_1234/phase2_tokenize/context.json \
+  --vocab-size-start=1500 \
+  --vocab-size-end=8000 \
+  --vocab-size-exponent=1.03 \
+  --model-type=unigram \
+  --character-coverage=0.9995 \
+  --user-defined-symbols='<s>,</s>,<n>' \
+  --output-format=piece
+
+# Phase 3: 特徴化
+PYTHONPATH=impl_gen1/src/pipelines/training/phase3_featurize \
+python -m phase3_featurize \
+  --input-context-file=/tmp/job_gen1_1234/phase2_tokenize/context.json \
+  --out-x-file=/tmp/job_gen1_1234/phase3_featurize/x.npz \
+  --out-y-file=/tmp/job_gen1_1234/phase3_featurize/y.npy \
+  --out-meta-file=/tmp/job_gen1_1234/phase3_featurize/metadata.json \
+  --out-context-file=/tmp/job_gen1_1234/phase3_featurize/context.json \
+  --context-length=32
+
+# Phase 4: モデル学習
+PYTHONPATH=impl_gen1/src/pipelines/training/phase4_training \
+python -m phase4_training \
+  --input-context-file=/tmp/job_gen1_1234/phase3_featurize/context.json \
+  --work-directory=/tmp/job_gen1_1234/phase4_training \
+  --out-model-file=/tmp/job_gen1_1234/phase4_training/model.keras \
+  --out-meta-file=/tmp/job_gen1_1234/phase4_training/metadata.json \
+  --out-context-file=/tmp/job_gen1_1234/phase4_training/context.json \
+  --epochs=50 \
+  --min-delta=0.001 \
+  --patience=3
+
+# Phase 5: 推論・文章生成
+PYTHONPATH=impl_gen1/src/pipelines/training/phase5_inference \
+python -m phase5_inference \
+  --input-context-file=/tmp/job_gen1_1234/phase4_training/context.json \
+  --out-texts-file=/tmp/job_gen1_1234/phase5_inference/generated_texts.json \
+  --out-readable-file=/tmp/job_gen1_1234/phase5_inference/generated_texts.txt \
+  --out-meta-file=/tmp/job_gen1_1234/phase5_inference/metadata.json \
+  --out-context-file=/tmp/job_gen1_1234/phase5_inference/context.json \
+  --num-documents=10 \
+  --max-chars=1000 \
+  --sampling-mode=random \
+  --prob-power=2.0
+```
+
 ## chABSA ダウンロードコマンド
 ※ 注意点
 - `unzip` はパイプ（標準入力）から展開できないため、一度ファイルに保存してから展開する
@@ -29,12 +100,12 @@
 
 ```bash
 # 保存先ディレクトリを作成
-mkdir -p impl_gen1/samples/chabsa_data/origin
+mkdir -p samples/chabsa_data/data
 
 # ZIP を一時ファイルに保存し、data/chABSA 配下の JSON のみ抽出してフラットに展開
 curl -L -o /tmp/chABSA-dataset.zip https://github.com/sinjorjob/chABSA-dataset/archive/refs/heads/master.zip
-unzip -j -o /tmp/chABSA-dataset.zip "chABSA-dataset-master/data/chABSA/*.json" -d ./impl_gen1/samples/chabsa_data/origin/
+unzip -j -o /tmp/chABSA-dataset.zip "chABSA-dataset-master/data/chABSA/*.json" -d ./samples/chabsa_data/data/
 rm /tmp/chABSA-dataset.zip
 
-find impl_gen1/samples/chabsa_data/origin -maxdepth 1 -type f -name '*.json' | wc -l
+find samples/chabsa_data/data -maxdepth 1 -type f -name '*.json' | wc -l
 ```

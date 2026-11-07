@@ -160,7 +160,8 @@ def main(argv: list[str] | None = None) -> int:
         f"phase4_training {metadata['status']} ({progress['stopped_reason']}): "
         f"epoch {progress['completed_epochs']}/{progress['target_epochs']}, "
         f"loss={stats['latest_loss']}, perplexity={stats['latest_perplexity']}, "
-        f"accuracy={stats['latest_accuracy']} ({metadata['elapsed_seconds']}s)"
+        f"accuracy={stats['latest_accuracy']}, peak_rss={stats['peak_rss_mb']}MB "
+        f"({metadata['elapsed_seconds']}s)"
     )
     if p_info.get("context_file"):
         print(f"context written: {p_info['context_file']}")
@@ -171,14 +172,14 @@ if __name__ == "__main__":
     sys.exit(main())
 
 """
-# 新規学習の実行例 (job_id=job1234)
+# 新規学習の実行例 (job_id=job_gen1_1234)
 PYTHONPATH=impl_gen1/src/pipelines/training/phase4_training \
 python -m phase4_training \
-  --input-context-file=/tmp/job1234/phase3_featurize/context.json \
-  --work-directory=/tmp/job1234/phase4_training \
-  --out-model-file=/tmp/job1234/phase4_training/model.keras \
-  --out-meta-file=/tmp/job1234/phase4_training/metadata.json \
-  --out-context-file=/tmp/job1234/phase4_training/context.json \
+  --input-context-file=/tmp/job_gen1_1234/phase3_featurize/context.json \
+  --work-directory=/tmp/job_gen1_1234/phase4_training \
+  --out-model-file=/tmp/job_gen1_1234/phase4_training/model.keras \
+  --out-meta-file=/tmp/job_gen1_1234/phase4_training/metadata.json \
+  --out-context-file=/tmp/job_gen1_1234/phase4_training/context.json \
   --epochs=50 \
   --min-delta=0.001 \
   --patience=3
@@ -186,7 +187,7 @@ python -m phase4_training \
 # 中断後の再開実行例 (--resume 指定時は --work-directory のみで再開可能、他の引数は無視)
 PYTHONPATH=impl_gen1/src/pipelines/training/phase4_training \
 python -m phase4_training \
-  --work-directory=/tmp/job1234/phase4_training \
+  --work-directory=/tmp/job_gen1_1234/phase4_training \
   --resume
 """
 

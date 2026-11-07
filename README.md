@@ -6,10 +6,10 @@ chABSA データセットを使用し、32トークンの文脈（重み付き O
 
 - **[impl_gen1](impl_gen1/README.md)（第一世代）**：X, Y を素直に作成
   - 語彙サイズ次元の重み付き ONE-HOT 総和をそのまま X データ（疎行列 `.npz`）とし、33単語目のトークンIDを Y データ（`.npy`）として学習するベースライン世代。
-- **[impl_gen2](impl_gen2/README.md)（第二世代）**：X データを 256 次元にハッシュ圧縮
-  - 語彙インデックスの代わりに `単語ハッシュ値 % 256` をインデックスとして X データを 256 次元に圧縮して学習する世代。
-- **[impl_gen3](impl_gen3/README.md)（第三世代）**：LM-A / LM-B の 2 段階モデル
-  - 256 次元の入力から 8〜32 次元の潜在ベクトルを作る **LM-A**（自己符号化器）と、その潜在ベクトルから次の単語を当てる **LM-B** の 2 段階構成世代。
+- **[impl_gen2](impl_gen2/README.md)（第二世代）**：X データを 3 ハッシュインデックスで 256 次元にハッシュ圧縮
+  - 語彙インデックスの代わりに 3 つの独立したハッシュインデックス（`hash1(word) % 256`, `hash2(word) % 256`, `hash3(word) % 256`）へ重みを加算し、X データを 256 次元（`--vector-dim` で指定可能）に圧縮して学習する世代。
+- **[impl_gen3](impl_gen3/README.md)（第三世代）**：chABSA ＋ livedoor ニュースコーパスの統合学習
+  - 第一世代と同じ機械学習ロジックを用い、Phase 1 で chABSA と livedoor コーパスを共通 JSON フォーマット（`{"sentences": [{"original": "...", "lines": [...]}]}`）に統合してから学習・推論を行う世代。
 
 ---
 
@@ -26,7 +26,12 @@ VS Code の Dev Containers 拡張機能を使用します。
 python --version  # Python 3.11.x
 python -m venv /opt/venvs/slm
 source /opt/venvs/slm/bin/activate
-python -m pip install -r requirements.txt
+
+# CPU 環境の場合
+python -m pip install -r requirements-cpu.txt
+
+# GPU 環境（.devcontainer/gpu）の場合
+python -m pip install -r requirements-gpu.txt
 ```
 
 `/opt/venvs` は Docker の named volume `slm-venvs` にマウントされるため、
@@ -34,9 +39,8 @@ Windows ホストのプロジェクトフォルダーを経由せず、Docker De
 仮想ディスクへ直接保存されます。コンテナーを再作成しても仮想環境は保持されます。
 
 仮想環境の作成、有効化、VS Code の Python インタープリター選択は手動で行います。
-`requirements.txt` のインストールは自動実行しません。
+`requirements-cpu.txt` / `requirements-gpu.txt` のインストールは自動実行しません。
 依存モジュールのバージョンは固定していません。
-GPU / CUDA の設定は含みません。
 
 ## bashメモ
 ```bash

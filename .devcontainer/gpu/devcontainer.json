@@ -1,0 +1,21 @@
+{
+  "name": "Machine Learning - Python 3.11 (GPU)",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11-bookworm",
+  "remoteUser": "vscode",
+  "runArgs": [
+    "--gpus",
+    "all"
+  ],
+  "hostRequirements": {
+    "gpu": "optional"
+  },
+  "containerEnv": {
+    "NVIDIA_VISIBLE_DEVICES": "all",
+    "NVIDIA_DRIVER_CAPABILITIES": "compute,utility",
+    "TF_FORCE_GPU_ALLOW_GROWTH": "true"
+  },
+  "mounts": [
+    "source=slm-venvs,target=/opt/venvs,type=volume"
+  ],
+  "postCreateCommand": "sudo chown vscode:vscode /opt/venvs"
+}

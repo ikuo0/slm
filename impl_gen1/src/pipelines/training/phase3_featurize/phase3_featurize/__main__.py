@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--input-context-file",
         required=True,
-        help="Phase 2 が出力した context.json のファイルパス (例: /tmp/job1234/phase2_tokenize/context.json)",
+        help="Phase 2 が出力した context.json のファイルパス (例: /tmp/job_gen1_1234/phase2_tokenize/context.json)",
     )
     parser.add_argument(
         "--out-x-file",
@@ -119,14 +119,14 @@ if __name__ == "__main__":
     sys.exit(main())
 
 """
-# 実行例 (job_id=job1234)
+# 実行例 (job_id=job_gen1_1234)
 PYTHONPATH=impl_gen1/src/pipelines/training/phase3_featurize \
 python -m phase3_featurize \
-  --input-context-file=/tmp/job1234/phase2_tokenize/context.json \
-  --out-x-file=/tmp/job1234/phase3_featurize/x.npz \
-  --out-y-file=/tmp/job1234/phase3_featurize/y.npy \
-  --out-meta-file=/tmp/job1234/phase3_featurize/metadata.json \
-  --out-context-file=/tmp/job1234/phase3_featurize/context.json \
+  --input-context-file=/tmp/job_gen1_1234/phase2_tokenize/context.json \
+  --out-x-file=/tmp/job_gen1_1234/phase3_featurize/x.npz \
+  --out-y-file=/tmp/job_gen1_1234/phase3_featurize/y.npy \
+  --out-meta-file=/tmp/job_gen1_1234/phase3_featurize/metadata.json \
+  --out-context-file=/tmp/job_gen1_1234/phase3_featurize/context.json \
   --context-length=32
 """
 

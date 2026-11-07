@@ -30,11 +30,12 @@ import tensorflow as tf
 
 # libs 配下のモジュールを単体実行時でも import できるようにパスを補完する
 _LIBS_DIR = Path(__file__).resolve().parents[4] / "libs"
-for _lib_name in ("weighted_onehot",):
+for _lib_name in ("weighted_onehot", "runtime_stats"):
     _lib_path = _LIBS_DIR / _lib_name
     if _lib_path.is_dir() and str(_lib_path) not in sys.path:
         sys.path.insert(0, str(_lib_path))
 
+from runtime_stats import get_memory_stats  # noqa: E402
 from weighted_onehot import (  # noqa: E402
     DEFAULT_BOS_TOKEN,
     DEFAULT_CONTEXT_LENGTH,
@@ -513,6 +514,7 @@ def run_phase5_inference(
     avg_chars = sum(d["num_chars"] for d in documents) / len(documents)
     avg_tokens = sum(d["num_tokens"] for d in documents) / len(documents)
     avg_sentences = sum(d["num_sentences"] for d in documents) / len(documents)
+    mem_stats = get_memory_stats()
 
     stats = {
         "num_documents": len(documents),
@@ -524,6 +526,13 @@ def run_phase5_inference(
         "avg_chars": round(avg_chars, 2),
         "avg_tokens": round(avg_tokens, 2),
         "avg_sentences": round(avg_sentences, 2),
+        "peak_rss_kb": mem_stats["peak_rss_kb"],
+        "peak_rss_mb": mem_stats["peak_rss_mb"],
+        "current_rss_kb": mem_stats["current_rss_kb"],
+        "current_rss_mb": mem_stats["current_rss_mb"],
+        "peak_vm_kb": mem_stats["peak_vm_kb"],
+        "peak_vm_mb": mem_stats["peak_vm_mb"],
+        "memory": mem_stats,
     }
 
     params_dict = {

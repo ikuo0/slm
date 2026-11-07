@@ -1,0 +1,9 @@
+{
+  "name": "Machine Learning - Python 3.11",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11-bookworm",
+  "remoteUser": "vscode",
+  "mounts": [
+    "source=slm-venvs,target=/opt/venvs,type=volume"
+  ],
+  "postCreateCommand": "sudo chown vscode:vscode /opt/venvs"
+}

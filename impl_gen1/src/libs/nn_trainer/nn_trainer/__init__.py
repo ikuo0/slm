@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import math
 import shutil
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,15 @@ from pathlib import Path
 import numpy as np
 import scipy.sparse as sp
 import tensorflow as tf
+
+# libs 配下の共通統計モジュール (runtime_stats) を単体実行時でも import できるようにパスを補完する
+_LIBS_DIR = Path(__file__).resolve().parents[2]
+for _lib_name in ("runtime_stats",):
+    _lib_path = _LIBS_DIR / _lib_name
+    if _lib_path.is_dir() and str(_lib_path) not in sys.path:
+        sys.path.insert(0, str(_lib_path))
+
+from runtime_stats import get_memory_stats  # noqa: E402
 
 __all__ = [
     "DEFAULT_EPOCHS",
@@ -256,6 +266,9 @@ def train_nn(
         cumulative_elapsed = float(metadata.get("elapsed_seconds", 0.0))
         started_at_str = str(metadata["started_at"])
         resume_count = int(metadata.get("resume_count", 0)) + 1
+        prev_memory_stats: dict | None = (
+            metadata.get("stats", {}).get("memory") or metadata.get("stats")
+        )
         saved_pipeline_info = metadata.get("pipeline_info")
         if saved_pipeline_info and pipeline_info is None:
             pipeline_info = dict(saved_pipeline_info)
@@ -298,6 +311,7 @@ def train_nn(
         cumulative_elapsed = 0.0
         started_at_str = datetime.now(timezone.utc).isoformat()
         resume_count = 0
+        prev_memory_stats = None
 
     best_anchor, no_improve_count = _recompute_convergence_state(history_records, min_delta)
 
@@ -336,7 +350,10 @@ def train_nn(
     )
 
     def _build_metadata_dict(status: str, reason: str | None) -> dict:
+        nonlocal prev_memory_stats
         now_iso = datetime.now(timezone.utc).isoformat()
+        mem_stats = get_memory_stats(prev_memory_stats)
+        prev_memory_stats = mem_stats
         if history_records:
             latest = history_records[-1]
             best = min(history_records, key=lambda r: r["loss"])
@@ -351,6 +368,13 @@ def train_nn(
                 "best_loss": best["loss"],
                 "best_perplexity": best["perplexity"],
                 "best_accuracy": best["accuracy"],
+                "peak_rss_kb": mem_stats["peak_rss_kb"],
+                "peak_rss_mb": mem_stats["peak_rss_mb"],
+                "current_rss_kb": mem_stats["current_rss_kb"],
+                "current_rss_mb": mem_stats["current_rss_mb"],
+                "peak_vm_kb": mem_stats["peak_vm_kb"],
+                "peak_vm_mb": mem_stats["peak_vm_mb"],
+                "memory": mem_stats,
             }
         else:
             stats_summary = {
@@ -364,6 +388,13 @@ def train_nn(
                 "best_loss": None,
                 "best_perplexity": None,
                 "best_accuracy": None,
+                "peak_rss_kb": mem_stats["peak_rss_kb"],
+                "peak_rss_mb": mem_stats["peak_rss_mb"],
+                "current_rss_kb": mem_stats["current_rss_kb"],
+                "current_rss_mb": mem_stats["current_rss_mb"],
+                "peak_vm_kb": mem_stats["peak_vm_kb"],
+                "peak_vm_mb": mem_stats["peak_vm_mb"],
+                "memory": mem_stats,
             }
 
         return {
@@ -452,6 +483,8 @@ def train_nn(
             best_anchor = min(best_anchor, loss_val)
             no_improve_count += 1
 
+        epoch_mem = get_memory_stats(prev_memory_stats)
+        prev_memory_stats = epoch_mem
         history_records.append(
             {
                 "epoch": current_epoch,
@@ -460,6 +493,8 @@ def train_nn(
                 "no_improve_count": no_improve_count,
                 "perplexity": round(ppl_val, 4),
                 "accuracy": round(acc_val, 6),
+                "peak_rss_mb": epoch_mem["peak_rss_mb"],
+                "current_rss_mb": epoch_mem["current_rss_mb"],
                 "elapsed_seconds": round(epoch_elapsed, 3),
                 "finished_at": datetime.now(timezone.utc).isoformat(),
             }
