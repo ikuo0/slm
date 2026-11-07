@@ -160,7 +160,8 @@ def main(argv: list[str] | None = None) -> int:
         f"phase4_training {metadata['status']} ({progress['stopped_reason']}): "
         f"epoch {progress['completed_epochs']}/{progress['target_epochs']}, "
         f"loss={stats['latest_loss']}, perplexity={stats['latest_perplexity']}, "
-        f"accuracy={stats['latest_accuracy']}, peak_rss={stats['peak_rss_mb']}MB "
+        f"accuracy={stats['latest_accuracy']}, device={stats.get('device', 'CPU')}, "
+        f"peak_rss={stats['peak_rss_mb']}MB "
         f"({metadata['elapsed_seconds']}s)"
     )
     if p_info.get("context_file"):

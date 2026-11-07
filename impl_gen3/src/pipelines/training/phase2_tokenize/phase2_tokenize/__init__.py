@@ -5,7 +5,7 @@ Phase 1 が出力した context.json を元に正規化済み共通フォーマ�
 2. 初期値 (vocab_size_start) から指数 (vocab_size_exponent) のべき乗で vocab_size を増やしながら
    SentencePiece 学習・トークン化・レポート作成 (report_{vocab_size}.json) を繰り返す
    - 下限割れ (Vocabulary size is smaller than required_chars) はスキップして次へ進む
-   - 終わり値 (vocab_size_end) を超えた処理を実行完了するか、上限割れ等のエラーが出た時点で終了
+   - スコアしきい値 (score_threshold) を超えるか、終わり値 (vocab_size_end) を超えた処理を実行完了するか、上限割れ等のエラーが出た時点で終了
 3. 全レポートの「単語数適切指数 (appropriateness_score)」を集計し、最も高い vocab_size を採用して
    context.json に全試行ディレクトリと採用ディレクトリ・各ファイルパスを記録する。
 """
@@ -39,10 +39,13 @@ from chabsa_corpus import (  # noqa: E402
 )
 from sp_tokenizer import tokenize_file, train_model  # noqa: E402
 
+DEFAULT_SCORE_THRESHOLD = 0.70
+
 __all__ = [
     "DEFAULT_BOS_TOKEN",
     "DEFAULT_EOS_TOKEN",
     "DEFAULT_NEWLINE_TOKEN",
+    "DEFAULT_SCORE_THRESHOLD",
     "load_context",
     "save_context",
     "resolve_phase1_normalized_path",
@@ -308,6 +311,7 @@ def run_phase2_tokenize(
     vocab_size_start: int = 1500,
     vocab_size_end: int = 8000,
     vocab_size_exponent: float = 1.05,
+    score_threshold: float = DEFAULT_SCORE_THRESHOLD,
     newline_token: str = DEFAULT_NEWLINE_TOKEN,
     bos_token: str = DEFAULT_BOS_TOKEN,
     eos_token: str = DEFAULT_EOS_TOKEN,
@@ -327,6 +331,7 @@ def run_phase2_tokenize(
         raise ValueError(
             f"vocab_size_exponent は 1.0 より大きい値を指定してください: {vocab_size_exponent}"
         )
+    score_threshold = float(score_threshold)
 
     input_context_file = Path(input_context_file)
     context = load_context(input_context_file)
@@ -473,6 +478,14 @@ def run_phase2_tokenize(
             }
             break
 
+        # スコアしきい値を超えた場合はここで終了
+        if score_threshold > 0.0 and report["appropriateness_score"] > score_threshold:
+            stopped_reason = (
+                f"exceeded_score_threshold "
+                f"({report['appropriateness_score']} > {score_threshold})"
+            )
+            break
+
         # 終わり値を超えた処理を実行した場合はここで終了
         if vocab_size > vocab_size_end:
             stopped_reason = f"exceeded_vocab_size_end ({vocab_size} > {vocab_size_end})"
@@ -539,6 +552,7 @@ def run_phase2_tokenize(
             "vocab_size_start": vocab_size_start,
             "vocab_size_end": vocab_size_end,
             "vocab_size_exponent": vocab_size_exponent,
+            "score_threshold": score_threshold,
             "bos_token": bos_token,
             "eos_token": eos_token,
             "newline_token": newline_token,

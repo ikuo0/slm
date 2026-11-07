@@ -145,7 +145,8 @@ python -m phase5_inference \
   --num-documents=10 \
   --max-chars=1000 \
   --sampling-mode=random \
-  --prob-power=2.0
+  --prob-power=2.0 \
+  --seed=555
 
 # 実行例2: 素の確率ランダム (--prob-power=1.0)
 PYTHONPATH=impl_gen3/src/pipelines/training/phase5_inference \
@@ -158,7 +159,8 @@ python -m phase5_inference \
   --num-documents=10 \
   --max-chars=1000 \
   --sampling-mode=random \
-  --prob-power=1.0
+  --prob-power=1.0 \
+  --seed=42
 
 # 実行例3: 最大確率を取り続ける (--sampling-mode=greedy) で代表 1 文書を作成
 PYTHONPATH=impl_gen3/src/pipelines/training/phase5_inference \
@@ -170,5 +172,6 @@ python -m phase5_inference \
   --out-context-file=/tmp/job_gen3_1234/phase5_inference/context.json \
   --num-documents=1 \
   --max-chars=1000 \
-  --sampling-mode=greedy
+  --sampling-mode=greedy \
+  --seed=42
 """

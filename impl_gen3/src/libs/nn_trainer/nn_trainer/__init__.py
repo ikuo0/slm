@@ -43,7 +43,10 @@ __all__ = [
     "DEFAULT_HIDDEN_UNITS",
     "DEFAULT_ACTIVATION",
     "DEFAULT_DROPOUT_RATE",
+    "DEFAULT_STEPS_PER_EXECUTION",
     "CSRBatchSequence",
+    "build_csr_tf_dataset",
+    "configure_gpu_memory_growth",
     "build_model",
     "train_nn",
 ]
@@ -56,6 +59,21 @@ DEFAULT_LEARNING_RATE = 1e-3
 DEFAULT_HIDDEN_UNITS = (256, 256)
 DEFAULT_ACTIVATION = "gelu"
 DEFAULT_DROPOUT_RATE = 0.1
+DEFAULT_STEPS_PER_EXECUTION = 64
+
+
+def configure_gpu_memory_growth() -> list[str]:
+    """利用可能な GPU に対してメモリ動的確保 (memory_growth) を設定し、GPU デバイス名一覧を返す。"""
+    gpus = tf.config.list_physical_devices("GPU")
+    gpu_names: list[str] = []
+    for gpu in gpus:
+        try:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError:
+            # すでにデバイス初期化済みの場合は設定変更できないため無視して続行
+            pass
+        gpu_names.append(getattr(gpu, "name", str(gpu)))
+    return gpu_names
 
 
 class CSRBatchSequence(tf.keras.utils.Sequence):
@@ -63,6 +81,8 @@ class CSRBatchSequence(tf.keras.utils.Sequence):
 
     全データを一括で密行列化しないため省メモリで動作し、Keras 標準の Dense 層や
     モデル保存・読み込み (load_model) と完全に互換性を持つ。
+    また、`.toarray()` の累積時間 (`toarray_seconds`) と `on_epoch_end()` の
+    CSR 全件並べ替え時間 (`reorder_seconds`) を計測・保持する。
     """
 
     def __init__(
@@ -82,8 +102,17 @@ class CSRBatchSequence(tf.keras.utils.Sequence):
         self.num_samples = int(self.x_csr.shape[0])
         self._rng = np.random.default_rng(seed)
         self.indices = np.arange(self.num_samples, dtype=np.int32)
+        self.toarray_seconds: float = 0.0
+        self.reorder_seconds: float = 0.0
         if self.shuffle:
+            t0 = time.perf_counter()
             self._rng.shuffle(self.indices)
+            self._x_epoch = self.x_csr[self.indices]
+            self._y_epoch = self.y_arr[self.indices]
+            self.reorder_seconds += time.perf_counter() - t0
+        else:
+            self._x_epoch = self.x_csr
+            self._y_epoch = self.y_arr
 
     def __len__(self) -> int:
         if self.num_samples == 0:
@@ -93,14 +122,92 @@ class CSRBatchSequence(tf.keras.utils.Sequence):
     def __getitem__(self, index: int) -> tuple[np.ndarray, np.ndarray]:
         start = index * self.batch_size
         end = min(start + self.batch_size, self.num_samples)
-        batch_idx = self.indices[start:end]
-        x_batch = self.x_csr[batch_idx].toarray().astype(np.float32, copy=False)
-        y_batch = self.y_arr[batch_idx]
+        t0 = time.perf_counter()
+        x_batch = self._x_epoch[start:end].toarray().astype(np.float32, copy=False)
+        self.toarray_seconds += time.perf_counter() - t0
+        y_batch = self._y_epoch[start:end]
         return x_batch, y_batch
 
     def on_epoch_end(self) -> None:
         if self.shuffle:
+            t0 = time.perf_counter()
             self._rng.shuffle(self.indices)
+            self._x_epoch = self.x_csr[self.indices]
+            self._y_epoch = self.y_arr[self.indices]
+            self.reorder_seconds += time.perf_counter() - t0
+
+
+def build_csr_tf_dataset(
+    indices: np.ndarray,
+    *,
+    batch_size: int,
+    max_row_nnz: int,
+    csr_indptr_t: tf.Tensor,
+    csr_indices_t: tf.Tensor,
+    csr_data_t: tf.Tensor,
+    y_t: tf.Tensor,
+) -> tf.data.Dataset:
+    """CSR 1次元配列群から固定幅 (batch_size, max_row_nnz) の疎バッチを高速抽出する tf.data.Dataset を構築する。
+
+    CPU 側での `.toarray()` による巨大な密行列生成と PyFunc オーバーヘッド、および
+    PCIe バス上の密行列転送 (約282GB/epoch) を回避し、非ゼロ要素の列番号と重みのみ
+    (1バッチあたり約64KB) を GPU へ転送する。
+    """
+    k_range = tf.expand_dims(tf.range(max_row_nnz, dtype=tf.int32), axis=0)  # [1, K]
+    row_ds = tf.data.Dataset.from_tensor_slices(indices)
+    batch_row_ds = row_ds.batch(batch_size, drop_remainder=False)
+
+    def _slice_sparse_2d(batch_rows: tf.Tensor):
+        starts = tf.expand_dims(tf.gather(csr_indptr_t, batch_rows), axis=1)  # [B, 1]
+        ends = tf.expand_dims(tf.gather(csr_indptr_t, batch_rows + 1), axis=1)  # [B, 1]
+        valid = k_range < (ends - starts)  # [B, K]
+        safe_pos = tf.where(valid, starts + k_range, 0)  # [B, K]
+        col_padded = tf.where(valid, tf.gather(csr_indices_t, safe_pos), 0)  # [B, K]
+        val_padded = tf.where(valid, tf.gather(csr_data_t, safe_pos), 0.0)  # [B, K]
+        y_batch = tf.gather(y_t, batch_rows)
+        return (col_padded, val_padded), y_batch
+
+    return batch_row_ds.map(
+        _slice_sparse_2d,
+        num_parallel_calls=tf.data.AUTOTUNE,
+    ).prefetch(tf.data.AUTOTUNE)
+
+
+def _attach_gpu_sparse_train_step(
+    model: tf.keras.Model,
+    *,
+    vocab_size: int,
+    max_row_nnz: int,
+    steps_per_execution: int = DEFAULT_STEPS_PER_EXECUTION,
+) -> None:
+    """モデルのネットワーク構造や保存形式を変えずに、GPU (XLA) 上で疎バッチを密テンソルへ展開してから train_step を実行するラッパを設定する。"""
+    orig_train_step = model.train_step
+
+    def _densify_batch(col_padded: tf.Tensor, val_padded: tf.Tensor) -> tf.Tensor:
+        actual_bs = tf.shape(col_padded)[0]
+        row_ids = tf.broadcast_to(
+            tf.expand_dims(tf.range(actual_bs, dtype=tf.int32), axis=1),
+            [actual_bs, max_row_nnz],
+        )
+        coords = tf.stack([row_ids, col_padded], axis=2)  # [B, K, 2]
+        zeros = tf.zeros([actual_bs, vocab_size], dtype=tf.float32)
+        return tf.tensor_scatter_nd_add(zeros, coords, val_padded)
+
+    @tf.function(jit_compile=True, reduce_retracing=True)
+    def _compiled_sparse_step(col_padded: tf.Tensor, val_padded: tf.Tensor, y_in: tf.Tensor):
+        x_dense = _densify_batch(col_padded, val_padded)
+        return orig_train_step((x_dense, y_in))
+
+    def _sparse_aware_train_step(data):
+        x_in, y_in = data
+        if isinstance(x_in, (tuple, list)) and len(x_in) == 2:
+            return _compiled_sparse_step(x_in[0], x_in[1], y_in)
+        return orig_train_step((x_in, y_in))
+
+    model.train_step = _sparse_aware_train_step
+    model.jit_compile = False
+    model.steps_per_execution = int(steps_per_execution)
+    model.train_function = None
 
 
 def build_model(
@@ -315,9 +422,12 @@ def train_nn(
 
     best_anchor, no_improve_count = _recompute_convergence_state(history_records, min_delta)
 
-    # データの読み込み
+    # データの読み込み時間計測
+    t_load_start = time.perf_counter()
     x_csr = sp.load_npz(str(resolved_x_file)).tocsr()
-    y_arr = np.load(str(resolved_y_file))
+    x_csr.sum_duplicates()
+    y_arr = np.asarray(np.load(str(resolved_y_file)), dtype=np.int32)
+    data_load_seconds = time.perf_counter() - t_load_start
 
     if x_csr.shape[0] != y_arr.shape[0]:
         raise ValueError(
@@ -326,10 +436,26 @@ def train_nn(
 
     num_samples = int(x_csr.shape[0])
     vocab_size = int(x_csr.shape[1])
+    num_batches = math.ceil(num_samples / batch_size) if num_samples > 0 else 0
+    row_lengths = np.diff(x_csr.indptr)
+    max_row_nnz = max(1, int(row_lengths.max())) if row_lengths.size > 0 else 1
+
+    gpu_devices = configure_gpu_memory_growth()
+    device_type = "GPU" if gpu_devices else "CPU"
+
+    # CSR 1次元配列群の Tensor 化時間計測 (全件密行列化は行わず約1.1GBの疎配列のまま保持)
+    t_csr_init_start = time.perf_counter()
+    with tf.device("/CPU:0"):
+        csr_indptr_t = tf.constant(x_csr.indptr, dtype=tf.int32)
+        csr_indices_t = tf.constant(x_csr.indices, dtype=tf.int32)
+        csr_data_t = tf.constant(x_csr.data, dtype=tf.float32)
+        y_t = tf.constant(y_arr, dtype=tf.int32)
+    csr_tensor_init_seconds = time.perf_counter() - t_csr_init_start
 
     tf.keras.utils.set_random_seed(seed + completed_epochs)
 
-    # モデルの構築またはロード
+    # モデルの構築またはロード時間計測
+    t_model_init_start = time.perf_counter()
     if resume:
         model = tf.keras.models.load_model(str(resolved_model_file))
     else:
@@ -340,26 +466,51 @@ def train_nn(
             dropout_rate=dropout_rate,
             learning_rate=learning_rate,
         )
-
-    dataset = CSRBatchSequence(
-        x_csr,
-        y_arr,
-        batch_size=batch_size,
-        shuffle=True,
-        seed=seed + completed_epochs,
+    _attach_gpu_sparse_train_step(
+        model,
+        vocab_size=vocab_size,
+        max_row_nnz=max_row_nnz,
+        steps_per_execution=DEFAULT_STEPS_PER_EXECUTION,
     )
+    model_init_seconds = time.perf_counter() - t_model_init_start
+
+    rng = np.random.default_rng(seed + completed_epochs)
+    indices = np.arange(num_samples, dtype=np.int32)
+
+    def _build_timing_summary() -> dict:
+        total_shuffle_sec = sum(float(r.get("shuffle_and_dataset_seconds", 0.0)) for r in history_records)
+        total_fit_sec = sum(float(r.get("train_fit_seconds", 0.0)) for r in history_records)
+        total_save_sec = sum(float(r.get("model_save_seconds", 0.0)) for r in history_records)
+        latest_rec = history_records[-1] if history_records else {}
+        return {
+            "data_load_seconds": round(data_load_seconds, 3),
+            "csr_tensor_init_seconds": round(csr_tensor_init_seconds, 3),
+            "model_init_seconds": round(model_init_seconds, 3),
+            "total_shuffle_and_dataset_seconds": round(total_shuffle_sec, 3),
+            "total_train_fit_seconds": round(total_fit_sec, 3),
+            "total_model_save_seconds": round(total_save_sec, 3),
+            "latest_epoch_shuffle_and_dataset_seconds": latest_rec.get("shuffle_and_dataset_seconds"),
+            "latest_epoch_train_fit_seconds": latest_rec.get("train_fit_seconds"),
+            "latest_epoch_ms_per_step": latest_rec.get("ms_per_step"),
+            "latest_epoch_model_save_seconds": latest_rec.get("model_save_seconds"),
+        }
 
     def _build_metadata_dict(status: str, reason: str | None) -> dict:
         nonlocal prev_memory_stats
         now_iso = datetime.now(timezone.utc).isoformat()
         mem_stats = get_memory_stats(prev_memory_stats)
         prev_memory_stats = mem_stats
+        timing_summary = _build_timing_summary()
         if history_records:
             latest = history_records[-1]
             best = min(history_records, key=lambda r: r["loss"])
             stats_summary = {
                 "num_samples": num_samples,
                 "vocab_size": vocab_size,
+                "num_batches_per_epoch": num_batches,
+                "max_row_nnz": max_row_nnz,
+                "device": device_type,
+                "gpu_devices": gpu_devices,
                 "latest_epoch": latest["epoch"],
                 "latest_loss": latest["loss"],
                 "latest_perplexity": latest["perplexity"],
@@ -375,11 +526,16 @@ def train_nn(
                 "peak_vm_kb": mem_stats["peak_vm_kb"],
                 "peak_vm_mb": mem_stats["peak_vm_mb"],
                 "memory": mem_stats,
+                "timing": timing_summary,
             }
         else:
             stats_summary = {
                 "num_samples": num_samples,
                 "vocab_size": vocab_size,
+                "num_batches_per_epoch": num_batches,
+                "max_row_nnz": max_row_nnz,
+                "device": device_type,
+                "gpu_devices": gpu_devices,
                 "latest_epoch": 0,
                 "latest_loss": None,
                 "latest_perplexity": None,
@@ -395,6 +551,7 @@ def train_nn(
                 "peak_vm_kb": mem_stats["peak_vm_kb"],
                 "peak_vm_mb": mem_stats["peak_vm_mb"],
                 "memory": mem_stats,
+                "timing": timing_summary,
             }
 
         return {
@@ -460,15 +617,32 @@ def train_nn(
     # 1 エポックずつ学習 → 収束判定 → モデル保存 → metadata.json 更新
     for current_epoch in range(completed_epochs + 1, target_epochs + 1):
         epoch_start = time.perf_counter()
+
+        # インデックスのシャッフルと tf.data.Dataset の構築時間計測
+        t_shuf_start = time.perf_counter()
+        rng.shuffle(indices)
+        epoch_dataset = build_csr_tf_dataset(
+            indices,
+            batch_size=batch_size,
+            max_row_nnz=max_row_nnz,
+            csr_indptr_t=csr_indptr_t,
+            csr_indices_t=csr_indices_t,
+            csr_data_t=csr_data_t,
+            y_t=y_t,
+        )
+        shuffle_and_dataset_sec = time.perf_counter() - t_shuf_start
+
+        # NN 学習 (model.fit) 時間計測
+        t_fit_start = time.perf_counter()
         hist = model.fit(
-            dataset,
+            epoch_dataset,
             epochs=current_epoch,
             initial_epoch=current_epoch - 1,
+            shuffle=False,
             verbose=1,
         )
-        epoch_elapsed = time.perf_counter() - epoch_start
-        cumulative_elapsed += epoch_elapsed
-        completed_epochs = current_epoch
+        train_fit_sec = time.perf_counter() - t_fit_start
+        ms_per_step = (train_fit_sec / num_batches * 1000.0) if num_batches > 0 else 0.0
 
         loss_val = float(hist.history["loss"][-1])
         acc_val = float(hist.history["accuracy"][-1])
@@ -483,24 +657,8 @@ def train_nn(
             best_anchor = min(best_anchor, loss_val)
             no_improve_count += 1
 
-        epoch_mem = get_memory_stats(prev_memory_stats)
-        prev_memory_stats = epoch_mem
-        history_records.append(
-            {
-                "epoch": current_epoch,
-                "loss": round(loss_val, 6),
-                "loss_improvement": loss_improvement,
-                "no_improve_count": no_improve_count,
-                "perplexity": round(ppl_val, 4),
-                "accuracy": round(acc_val, 6),
-                "peak_rss_mb": epoch_mem["peak_rss_mb"],
-                "current_rss_mb": epoch_mem["current_rss_mb"],
-                "elapsed_seconds": round(epoch_elapsed, 3),
-                "finished_at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-
         # 終了条件の判定 (収束 or 最大エポック到達)
+        completed_epochs = current_epoch
         converged = min_delta > 0.0 and no_improve_count >= patience
         reached_max = completed_epochs >= target_epochs
 
@@ -514,8 +672,36 @@ def train_nn(
             stopped_reason = None
             status = "running"
 
-        # 1 epoch ごとにモデルと metadata.json を保存
+        # モデル保存時間計測
+        t_save_start = time.perf_counter()
         _atomic_save_model(model, resolved_model_file)
+        model_save_sec = time.perf_counter() - t_save_start
+
+        epoch_elapsed = time.perf_counter() - epoch_start
+        cumulative_elapsed += epoch_elapsed
+
+        epoch_mem = get_memory_stats(prev_memory_stats)
+        prev_memory_stats = epoch_mem
+        history_records.append(
+            {
+                "epoch": current_epoch,
+                "loss": round(loss_val, 6),
+                "loss_improvement": loss_improvement,
+                "no_improve_count": no_improve_count,
+                "perplexity": round(ppl_val, 4),
+                "accuracy": round(acc_val, 6),
+                "peak_rss_mb": epoch_mem["peak_rss_mb"],
+                "current_rss_mb": epoch_mem["current_rss_mb"],
+                "shuffle_and_dataset_seconds": round(shuffle_and_dataset_sec, 3),
+                "train_fit_seconds": round(train_fit_sec, 3),
+                "ms_per_step": round(ms_per_step, 3),
+                "model_save_seconds": round(model_save_sec, 3),
+                "elapsed_seconds": round(epoch_elapsed, 3),
+                "finished_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+        # metadata.json を保存
         current_meta = _build_metadata_dict(status, stopped_reason)
         _save_metadata_files(current_meta)
 

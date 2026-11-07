@@ -64,3 +64,53 @@ chABSA データセットや livedoor ニュースコーパス等を使用し、
 ### 3.3 コーディング・ドキュメント規約
 - Python コードには型ヒント（`from __future__ import annotations`）と日本語の docstring / コメントを記載し、既存のコメントやドキュメントの整合性を維持する。
 - 各世代の仕様変更や CLI オプションの追加を行った場合は、該当世代の `README.md` および `run_all.sh` の記述も同期して更新する。
+
+---
+
+## 4. プロジェクト固有の技術仕様・設計上の勘所（AI引き継ぎ事項）
+
+他の AI エージェントや開発者が本プロジェクトを改修・拡張する際は、以下のドメイン特性と設計上の制約を必ず守ってください。
+
+### 4.1 疎行列（CSR）による省メモリ方針と「全件密行列化」の禁止
+- 第1世代・第3世代の特徴量 `x.npz` は、語彙サイズ $V$ 次元（数千〜1万数千次元）× 数百万サンプルの重み付き ONE-HOT 総和ベクトルです。
+- これを全件まとめて `float32` 密行列に展開すると数百 GB（例：506万サンプル × 13,934次元 ＝ **約 282.3 GB**）に達し、即座にメモリ枯渇（OOM）を引き起こします。
+- **いかなる改修においても、データセット全件を密行列化（`x_csr.toarray()`）してはなりません。**
+- メモリ上では常に CSR 疎行列（またはその内部1次元配列 `indptr`, `indices`, `data`、約 1.1 GB）のまま保持し、ミニバッチ単位（`batch_size=256` 等）で密ベクトルに展開して NN へ投入してください。
+
+### 4.2 NN モデルの互換性維持とエポック単位保存・再開（`--resume`）設計
+- `phase4_training`（`nn_trainer`）は、長時間学習の中断・再開を前提とし、**1エポック完了ごとに `model.keras` と `metadata.json` を上書き保存**します（毎エポック `model.fit(epochs=1)` を呼び直すオーバーヘッドは実測約 0.11 秒/epoch と極小であるため、このループ構造を維持します）。
+- `--resume` 指定時は他の CLI 引数を無視し、`work_directory/metadata.json` からハイパーパラメータ・入出力パス・収束判定状態・学習履歴を完全復元して次エポックから再開します。
+- **互換性制約**: 学習パイプラインの高速化や内部改修を行う際も、**NN のレイヤー構造（`Input(vocab_size)` → `Dense` 隠れ層 → `Dense(vocab_size, softmax)`）・重み形式・モデルの入出力シグネチャを変更してはなりません**。
+  - これにより、「改修前に保存された `model.keras` からの `--resume` 再開」および「`phase5_inference`（`text_generator`）での `tf.keras.models.load_model()` による密ベクトル推論」との完全な互換性を保証します。
+
+### 4.3 言語モデルの評価指標と収束判定ポリシー
+- 自然言語の次単語予測では、同じ文脈（32トークン）の後に続く正解候補が複数存在するため、Top-1 正解率（`accuracy`）は 30〜40% 程度で頭打ちになります。したがって **`accuracy` は表示・記録のみの参考指標とし、学習の終了判定には一切使用しません**。
+- Phase 5 の確率サンプリング（`sampling_mode=random`, `prob_power=2.0`）における生成文章の品質は、語彙全体に対する確率分布のシャープさ（交差エントロピー `loss` および実質分岐数 $\text{Perplexity} = e^{\text{loss}}$）に依存します。
+- **収束判定は `loss` の改善幅（`loss_improvement < min_delta` が `patience` エポック連続したか）のみで行います**（デフォルト：`min_delta=0.001`, `patience=3`）。
+
+### 4.4 SentencePiece 語彙サイズ探索（Phase 2）の特性と閾値制御
+- `sp_vocab_Remember` による SentencePiece（Unigram）語彙サイズ探索では、形態素解析辞書とは異なりコーパス全体のサブワード統計分割を行います。
+- 特に `impl_gen3`（chABSA の会計・金融専門用語 ＋ livedoor ニュースの日常語・スラング・記号の混合コーパス）では、文字種と複合語が多様なため、語彙サイズを 18,000 語以上に増やしても複合スコア（特に正規化エントロピー項）が緩やかにしか上昇しない特性があります。
+- 語彙サイズの過度な肥大化は Phase 3 以降の次元数 $V$ と計算量を増大させるため、`phase2_tokenize` では `--score-threshold`（デフォルト `0.70`）を指定可能とし、目標スコア到達時点で探索を早期終了できる設計としています。
+
+---
+
+## 5. 過去の問題解決・ボトルネック改善の記録
+
+プロジェクト内で発生した技術的課題と解決アプローチの要約です（詳細な計測値・プロファイル内訳は [`.gemini/troubleshooting_history.md`](./troubleshooting_history.md) を参照）。
+
+### 5.1 CSR 疎行列からのバッチ密展開による省メモリ化
+- **課題**: 数百万件 × 数千〜1万数千次元の特徴量 X を密行列として保持すると数十〜数百 GB の RAM を消費する。
+- **解決**: 特徴量ファイルは `scipy.sparse.csr_matrix`（`.npz`）形式で保存し、NN の構造（通常の `Dense` 入力層）を変更せずに済むよう、ミニバッチ単位（256件）でのみ `float32` 密ベクトルへ展開して学習する方式を採用。
+
+### 5.2 `nn_trainer` GPU 学習のボトルネック特定と高速化（impl_gen3）
+- **課題**: `impl_gen3`（5,065,168サンプル、語彙 13,934次元、バッチサイズ 256＝19,786 steps/epoch）の GPU 学習（RTX 4060）において、1エポックあたり **約 216〜246 秒** を要していた。
+- **ボトルネック分析（TensorFlow Profiler / 単体計測）**:
+  1. `CSRBatchSequence` の `.toarray()` 自体は **約 7.5 秒/epoch**、エポック毎の CSR 全件並べ替え（`on_epoch_end`）は **約 1.3〜1.5 秒/epoch**、`model.fit()` の毎エポック呼び直しは **約 0.11 秒/epoch** に過ぎなかった。
+  2. 真のボトルネックは、疎データ（約 27 KB/batch）を CPU 上で `.toarray()` により **14.27 MB/batch（282.3 GB/epoch）** の密配列へ膨張させ、Keras の `PyDataset`（内部 `PyFunc`）経由で毎ステップ CPU メモリコピー＆PCIe 転送（`MemcpyH2D`）していたことによる **GPU のデータ供給待ち（アイドル時間：約 150〜175 秒/epoch）** であった（純粋な GPU NN 演算時間は約 68.5 秒/epoch）。
+- **解決策（[`impl_gen3/src/libs/nn_trainer/nn_trainer/__init__.py`](../impl_gen3/src/libs/nn_trainer/nn_trainer/__init__.py)）**:
+  1. **固定長 2D Gather による疎バッチ供給（`build_csr_tf_dataset`）**: 文脈長 32 の制約により各行の非ゼロ要素数が最大 32 個（`max_row_nnz = 32`）であることを活かし、C++ `tf.data` パイプライン上で 2D Gather により固定形状 `(batch_size, 32)` の列インデックスと重み（**64 KB/batch、1.26 GB/epoch**）を切り出して GPU へ転送（PCIe 転送量を **99.5% 削減**、`PyFunc` を完全廃止）。
+  2. **GPU 上でのオンザフライ密展開＋XLA 融合（`_attach_gpu_sparse_train_step`）**: モデルのレイヤー構造は変えず、`model.train_step` をラップして `@tf.function(jit_compile=True)` 内で `tf.tensor_scatter_nd_add` により GPU VRAM 上で `(256, 13934)` の密テンソルへ展開（`.toarray()` との数値誤差 `0.0`）。さらに `steps_per_execution=64` で Python 往復オーバーヘッドを削減。
+  3. **計測時間のメタデータ記録**: `metadata.json` の `stats.timing` および各エポックの `history[]` にデータ読込・シャッフル・`model.fit` 実行時間・`ms_per_step`・モデル保存時間を記録。
+- **成果**: 学習結果とモデル互換性（修正前モデルからの `--resume` 再開・Phase 5 推論）を完全維持したまま、1エポックあたりの学習時間を **216〜246 秒 → 101〜105 秒（単体最速 85.7 秒、約 2.1〜2.8 倍高速）** に短縮。
+

@@ -9,6 +9,7 @@ from . import (
     DEFAULT_BOS_TOKEN,
     DEFAULT_EOS_TOKEN,
     DEFAULT_NEWLINE_TOKEN,
+    DEFAULT_SCORE_THRESHOLD,
     run_phase2_tokenize,
 )
 
@@ -69,6 +70,15 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         required=True,
         help="vocab_size を増やすべき乗の指数 (小数指定可、例: 1.03 → ((start^1.03)^1.03)...)",
+    )
+    parser.add_argument(
+        "--score-threshold",
+        type=float,
+        default=DEFAULT_SCORE_THRESHOLD,
+        help=(
+            "単語数適切指数 (appropriateness_score) の終了しきい値 "
+            "(この値を超えた時点で探索終了、0 以下で無効、default: %(default)s)"
+        ),
     )
 
     # コーパス・SentencePiece パラメータ
@@ -145,6 +155,7 @@ def main(argv: list[str] | None = None) -> int:
         vocab_size_start=args.vocab_size_start,
         vocab_size_end=args.vocab_size_end,
         vocab_size_exponent=args.vocab_size_exponent,
+        score_threshold=args.score_threshold,
         newline_token=args.newline_token,
         bos_token=args.bos_token,
         eos_token=args.eos_token,
@@ -197,6 +208,7 @@ python -m phase2_tokenize \
   --vocab-size-start=1500 \
   --vocab-size-end=8000 \
   --vocab-size-exponent=1.03 \
+  --score-threshold=0.70 \
   --model-type=unigram \
   --character-coverage=0.9995 \
   --user-defined-symbols='<s>,</s>,<n>' \

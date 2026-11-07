@@ -58,6 +58,7 @@ PYTHONPATH="${PIPELINES_DIR}/phase2_tokenize" \
   --vocab-size-start=1500 \
   --vocab-size-end=16000 \
   --vocab-size-exponent=1.03 \
+  --score-threshold=0.70 \
   --model-type=unigram \
   --character-coverage=0.9995 \
   --user-defined-symbols='<s>,</s>,<n>' \
