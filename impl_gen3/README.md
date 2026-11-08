@@ -134,3 +134,51 @@ python -m phase4_training \
   --work-directory=/tmp/job_gen3_1234/phase4_training \
   --resume
 ```
+
+### Phase 4 の疎入力計算
+
+Phase 4 または `python -m nn_trainer` に `--input-mode sparse` を追加すると、
+有効インデックスに対応する先頭層の重み行だけを取得し、入力値で重み付けして合計します。
+全語彙次元の入力ベクトルへの展開を省略します。従来方式は `--input-mode dense`（既定値）です。
+Python API では `run_phase4_training(..., input_mode="sparse")` または
+`train_nn(..., input_mode="sparse")` で指定できます。
+
+設定は metadata.json に保存され、`--resume` 時に復元されます。既存のメタデータは dense として扱います。
+保存モデルは従来と同じ密ベクトル入力なので、Phase 5 の推論にもそのまま利用できます。
+出力層は全語彙を計算するため、学習全体の高速化率は実測で比較してください。
+
+### Phase 4 の CPU / GPU 切り替え
+
+Phase 4 と `nn_trainer` の両方で `--device auto|cpu|gpu` を指定できます。
+`auto`（既定）は利用可能なら GPU、`cpu` は CPU のみ、`gpu` は GPU 必須です。
+GPU が利用できない環境で `gpu` を指定するとエラーになります。
+起動時に選択結果を表示し、metadata.json に指定値と検出したデバイスを記録します。
+GPU モードでも入力データの準備などは CPU で行います。
+
+```bash
+# 既存の学習を CPU のみで再開
+PYTHONPATH=impl_gen3/src/pipelines/training/phase4_training \
+python -m phase4_training \
+  --work-directory=/tmp/job_gen3_1234/phase4_training \
+  --resume --device cpu
+```
+
+`device` は再開時も今回の指定を使います（省略すると auto）。
+Python API では `device="cpu"` などで指定します。
+デバイスの切り替えは新しいプロセスで実行してください。
+
+### 再開時のバッチサイズ変更
+
+Phase 4 と `nn_trainer` は、再開時にも `--batch-size` を指定できます。
+省略すると保存済みの値を維持します。新規学習で省略した場合は256です。
+
+```bash
+PYTHONPATH=impl_gen3/src/pipelines/training/phase4_training \
+python -m phase4_training \
+  --work-directory=/tmp/job_gen3_1234/phase4_training \
+  --resume --device gpu --batch-size 2048
+```
+
+重みと optimizer 状態を引き継ぎ、次に学習するチャンクから新しいサイズを使います。
+以後のチェックポイントに新しい値を保存します。Python API でも `batch_size=2048` を指定できます。
+バッチサイズを変えると重みの更新回数や学習の進み方が変わるため、loss の推移も確認してください。

@@ -5,7 +5,7 @@
   nn_trainer で チャンクごとにモデルと metadata.json を保存しながら学習を行い、
   後続フェーズ（推論・検証等）へ引き継ぐ context.json を出力する。
 - 中断再開時 (resume=True):
-  他の引数を無視し、作業ディレクトリ内の metadata.json（および context.json）から
+  device、batch_size と出力メタデータ指定以外の引数を無視し、作業ディレクトリ内の metadata.json（および context.json）から
   設定を復元して未完了チャンクから学習を再開する。
 """
 
@@ -97,11 +97,13 @@ def run_phase4_training(
     epochs: int = DEFAULT_EPOCHS,
     min_delta: float = DEFAULT_MIN_DELTA,
     patience: int = DEFAULT_PATIENCE,
-    batch_size: int = DEFAULT_BATCH_SIZE,
+    batch_size: int | None = None,
     learning_rate: float = DEFAULT_LEARNING_RATE,
     hidden_units: tuple[int, ...] | list[int] = DEFAULT_HIDDEN_UNITS,
     activation: str = DEFAULT_ACTIVATION,
     dropout_rate: float = DEFAULT_DROPOUT_RATE,
+    input_mode: str = "dense",
+    device: str = "auto",
     seed: int = 42,
     x_file: str | Path | None = None,
     y_file: str | Path | None = None,
@@ -110,7 +112,7 @@ def run_phase4_training(
 
     Args:
         work_directory: 作業ディレクトリ (model.keras, metadata.json, context.json のデフォルト保存先)
-        resume: True の場合、他の引数を無視して作業ディレクトリの metadata.json から再開する
+        resume: True の場合、device、batch_size と出力メタデータ指定以外の引数を無視して作業ディレクトリの metadata.json から再開する
         input_context_file: Phase 3 が出力した context.json のファイルパス (resume=False 時は必須)
         out_model_file: モデルの出力ファイルパス (省略時は {work_directory}/model.keras)
         out_meta_file: メタデータの出力ファイルパス (省略時は {work_directory}/metadata.json)
@@ -118,11 +120,13 @@ def run_phase4_training(
         epochs: 最大エポック数 (default: 50)
         min_delta: 収束判定の最小 Loss 改善幅 (default: 0.001)
         patience: 改善幅 < min_delta が何エポック連続したら収束終了とするか (default: 3)
-        batch_size: ミニバッチサイズ (default: 256)
+        batch_size: 明示指定時は再開時も変更。省略時は新規256、再開時は保存値
         learning_rate: 学習率 (default: 0.001)
         hidden_units: 隠れ層ユニット数 (default: (256, 256))
         activation: 隠れ層活性化関数 (default: "gelu")
         dropout_rate: ドロップアウト率 (default: 0.1)
+        input_mode: 先頭層の計算方式 (dense または sparse)
+        device: 実行デバイス (auto, cpu, gpu)。再開時も指定可能
         seed: 乱数シード (default: 42)
         x_file: 明示的に X (.npz) ファイルを上書き指定する場合のパス (任意)
         y_file: 明示的に Y (.npy) ファイルを上書き指定する場合のパス (任意)
@@ -134,10 +138,12 @@ def run_phase4_training(
     default_context_path = work_dir / "context.json"
 
     if resume:
-        # 再開時は他の引数を無視し、作業ディレクトリ内の metadata.json から復元して再開
+        # 再開時は device、batch_size と出力メタデータ指定以外の引数を無視し、作業ディレクトリ内の metadata.json から復元して再開
         metadata = train_nn(
             work_dir,
             resume=True,
+            batch_size=batch_size,
+            device=device,
             out_meta_file=out_meta_file,
         )
         p_info = metadata.get("pipeline_info") or {}
@@ -229,6 +235,8 @@ def run_phase4_training(
         batch_size=batch_size,
         learning_rate=learning_rate,
         hidden_units=hidden_units,
+        input_mode=input_mode,
+        device=device,
         activation=activation,
         dropout_rate=dropout_rate,
         seed=seed,

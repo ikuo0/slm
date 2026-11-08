@@ -73,6 +73,59 @@ class ChunkTrainingTests(unittest.TestCase):
         self.assertEqual(result["progress"]["partial_epoch"], {})
         self.assertEqual((work / "model.keras").read_text(), "4")
 
+    def test_resume_batch_override_and_omission(self):
+        for override in (None, 2):
+            with self.subTest(override=override):
+                batches = []
+                interrupt = [True]
+
+                class Model:
+                    def __init__(self, trained=0):
+                        self.trained = trained
+
+                    def save(self, path):
+                        Path(path).write_text(str(self.trained))
+
+                    def fit(self, dataset, **kwargs):
+                        if self.trained == 1 and interrupt[0]:
+                            raise KeyboardInterrupt
+                        batches.append([int(y.shape[0]) for _, y in dataset])
+                        self.trained += 1
+                        return SimpleNamespace(history={"loss": [2.0], "accuracy": [0.5]})
+
+                work = self.root / f"batch_{override}"
+                context = self.root / f"batch_context_{override}.json"
+                context.write_text(json.dumps({"phase3_featurize": {"x_files": self.xs, "y_files": self.ys}}))
+                with patch.object(trainer, "build_model", return_value=Model()), \
+                     patch.object(trainer, "_attach_gpu_sparse_train_step"), \
+                     patch.object(trainer.tf.keras.models, "load_model",
+                                  side_effect=lambda path: Model(int(Path(path).read_text()))):
+                    with self.assertRaises(KeyboardInterrupt):
+                        run_phase4_training(work, input_context_file=context, epochs=2, min_delta=0,
+                                            batch_size=1)
+                    # 1つ目のチャンク完了時点から、途中エポックを再開。
+                    saved = json.loads((work / "metadata.json").read_text())
+                    self.assertEqual(saved["params"]["batch_size"], 1)
+                    # 旧メタデータ形式も扱えることを検証。
+                    saved["progress"]["partial_epoch"].pop("num_batches", None)
+                    (work / "metadata.json").write_text(json.dumps(saved))
+                    with self.assertRaises(ValueError):
+                        run_phase4_training(work, resume=True, batch_size=0)
+                    interrupt[0] = False
+                    result = run_phase4_training(work, resume=True, batch_size=override)
+                expected_size = 1 if override is None else override
+                self.assertEqual(result["params"]["batch_size"], expected_size)
+                self.assertEqual(batches, [[1, 1, 1], [1],
+                                          [1, 1, 1] if override is None else [2, 1], [1]])
+                self.assertEqual([r["num_batches"] for r in result["history"]],
+                                 [4, 4 if override is None else 3])
+                self.assertEqual(result["progress"]["completed_epochs"], 2)
+                self.assertEqual(result["history"][0]["loss"], 2.0)
+                with patch.object(trainer, "_attach_gpu_sparse_train_step"), \
+                     patch.object(trainer.tf.keras.models, "load_model", return_value=Model()):
+                    again = run_phase4_training(work, resume=True)
+                self.assertEqual(again["params"]["batch_size"], expected_size)
+
     def test_interrupt_after_final_chunk_before_epoch_judgment(self):
         calls = []
         class Model:

@@ -35,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="中断再開フラグ (指定時は他の引数を無視し、作業ディレクトリの metadata.json から設定を読み込んで再開する)",
+        help="中断再開フラグ (指定時は device、batch-size と出力メタデータ指定以外の引数を無視し、作業ディレクトリの metadata.json から設定を読み込んで再開する)",
     )
     parser.add_argument(
         "--input-context-file",
@@ -80,8 +80,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=DEFAULT_BATCH_SIZE,
-        help="ミニバッチサイズ (default: %(default)s)",
+        default=None,
+        help=f"ミニバッチサイズ。再開時も変更可能。省略時は新規{DEFAULT_BATCH_SIZE}、再開時は保存値",
     )
     parser.add_argument(
         "--learning-rate",
@@ -123,6 +123,14 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="正解ラベル Y (.npy) を明示的に上書き指定する場合のパス (省略時は context.json から取得)",
     )
+    parser.add_argument(
+        "--input-mode", choices=("dense", "sparse"), default="dense",
+        help="先頭層の計算方式: dense=密展開、sparse=有効インデックスから直接計算 (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--device", choices=("auto", "cpu", "gpu"), default="auto",
+        help="実行デバイス: auto=GPU優先、cpu=CPUのみ、gpu=GPU必須。再開時も指定可能 (default: %(default)s)",
+    )
     args = parser.parse_args(argv)
 
     if not args.resume:
@@ -146,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         hidden_units=hidden_units,
+        input_mode=args.input_mode,
+        device=args.device,
         activation=args.activation,
         dropout_rate=args.dropout_rate,
         seed=args.seed,
@@ -181,13 +191,18 @@ python -m phase4_training \
   --out-model-file=/tmp/job_gen3_1234/phase4_training/model.keras \
   --out-meta-file=/tmp/job_gen3_1234/phase4_training/metadata.json \
   --out-context-file=/tmp/job_gen3_1234/phase4_training/context.json \
+  --input-mode=sparse \
   --epochs=50 \
   --min-delta=0.001 \
-  --patience=3
+  --patience=3 \
+  --device=gpu \
+  --batch-size=2048
 
-# 中断後の再開実行例 (--resume 指定時は --work-directory のみで再開可能、他の引数は無視)
+# 中断後の再開実行例 (--resume 指定時は --work-directory のみで再開可能。device と batch-size は変更可能)
 PYTHONPATH=impl_gen3/src/pipelines/training/phase4_training \
 python -m phase4_training \
   --work-directory=/tmp/job_gen3_1234/phase4_training \
-  --resume
+  --resume \
+  --device=gpu \
+  --batch-size=4096
 """

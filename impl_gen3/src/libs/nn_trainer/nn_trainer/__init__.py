@@ -6,7 +6,7 @@ Phase 3 (weighted_onehot) で作成した疎行列 X (.npz) と正解トーク�
 主な特徴:
 - 終了条件として最大エポック数 (epochs) と収束判定閾値 (min_delta, patience) の両方を指定可能
 - チャンク完了ごとにモデルと metadata.json を保存し、全チャンク完了後に収束判定する
-- 中断・再開フラグ (resume=True / --resume) が指定された場合は、他の引数を無視して
+- 中断・再開フラグ (resume=True / --resume) が指定された場合は、device、batch_size と出力メタデータ指定以外の引数を無視して
   作業ディレクトリ内の metadata.json から設定・進捗・保存済みモデル（オプティマイザ状態含む）を
   読み込んで未完了チャンクから学習を再開する
 """
@@ -48,6 +48,7 @@ __all__ = [
     "CSRBatchSequence",
     "build_csr_tf_dataset",
     "configure_gpu_memory_growth",
+    "configure_training_device",
     "build_model",
     "train_nn",
 ]
@@ -65,7 +66,7 @@ DEFAULT_STEPS_PER_EXECUTION = 64
 
 def configure_gpu_memory_growth() -> list[str]:
     """利用可能な GPU に対してメモリ動的確保 (memory_growth) を設定し、GPU デバイス名一覧を返す。"""
-    gpus = tf.config.list_physical_devices("GPU")
+    gpus = tf.config.get_visible_devices("GPU")
     gpu_names: list[str] = []
     for gpu in gpus:
         try:
@@ -74,6 +75,26 @@ def configure_gpu_memory_growth() -> list[str]:
             # すでにデバイス初期化済みの場合は設定変更できないため無視して続行
             pass
         gpu_names.append(getattr(gpu, "name", str(gpu)))
+    return gpu_names
+
+
+def configure_training_device(device: str = "auto") -> list[str]:
+    """TensorFlow 初期化前にデバイスを選択し、有効な GPU の一覧を返す。"""
+    if device not in ("auto", "cpu", "gpu"):
+        raise ValueError(f"device は auto, cpu, gpu を指定してください: {device}")
+    if device == "cpu":
+        if tf.config.get_visible_devices("GPU"):
+            try:
+                tf.config.set_visible_devices([], "GPU")
+            except RuntimeError as exc:
+                raise RuntimeError(
+                    "TensorFlow 初期化後は CPU モードに変更できません。"
+                    "新しいプロセスで --device cpu を指定してください。"
+                ) from exc
+        return []
+    gpu_names = configure_gpu_memory_growth()
+    if device == "gpu" and not gpu_names:
+        raise RuntimeError("利用可能な GPU がありません。--device cpu または auto を指定してください。")
     return gpu_names
 
 
@@ -211,6 +232,47 @@ def _attach_gpu_sparse_train_step(
     model.train_function = None
 
 
+def _attach_direct_sparse_train_step(
+    model: tf.keras.Model,
+    *,
+    steps_per_execution: int = DEFAULT_STEPS_PER_EXECUTION,
+) -> None:
+    """保存する密入力モデルの重みを共有し、学習時だけ先頭 Dense を疎に計算する。"""
+    original_train_step = model.train_step
+    first_dense = next(layer for layer in model.layers if isinstance(layer, tf.keras.layers.Dense))
+    remaining_layers = model.layers[model.layers.index(first_dense) + 1:]
+
+    def _sparse_train_step(data):
+        x_in, y_in, sample_weight = tf.keras.utils.unpack_x_y_sample_weight(data)
+        if not isinstance(x_in, (tuple, list)) or len(x_in) != 2:
+            return original_train_step(data)
+        columns, values = x_in
+        with tf.GradientTape() as tape:
+            # [B, K, H] の重み行だけを取得する。語彙次元の入力は生成しない。
+            selected = tf.gather(first_dense.kernel, columns)
+            h = tf.reduce_sum(selected * tf.cast(values[..., None], selected.dtype), axis=1)
+            if first_dense.use_bias:
+                h = h + first_dense.bias
+            h = first_dense.activation(h)
+            for layer in remaining_layers:
+                h = layer(h, training=True)
+            loss = model.compute_loss(
+                x=x_in, y=y_in, y_pred=h, sample_weight=sample_weight, training=True
+            )
+            scaled_loss = model.optimizer.scale_loss(loss)
+        gradients = tape.gradient(scaled_loss, model.trainable_variables)
+        model.optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+        # Keras の標準 train_step と同じく loss をバッチ件数で重み付けする。
+        model._loss_tracker.update_state(loss, sample_weight=tf.shape(y_in)[0])
+        return model.compute_metrics(x_in, y_in, h, sample_weight=sample_weight)
+
+    model.train_step = _sparse_train_step
+    # gather の疎勾配と optimizer の組み合わせを XLA に制限しない。
+    model.jit_compile = False
+    model.steps_per_execution = int(steps_per_execution)
+    model.train_function = None
+
+
 def build_model(
     vocab_size: int,
     *,
@@ -321,11 +383,13 @@ def train_nn(
     patience: int = DEFAULT_PATIENCE,
     out_model_file: str | Path | None = None,
     out_meta_file: str | Path | None = None,
-    batch_size: int = DEFAULT_BATCH_SIZE,
+    batch_size: int | None = None,
     learning_rate: float = DEFAULT_LEARNING_RATE,
     hidden_units: tuple[int, ...] | list[int] = DEFAULT_HIDDEN_UNITS,
     activation: str = DEFAULT_ACTIVATION,
     dropout_rate: float = DEFAULT_DROPOUT_RATE,
+    input_mode: str = "dense",
+    device: str = "auto",
     seed: int = 42,
     pipeline_info: dict | None = None,
 ) -> dict:
@@ -337,7 +401,7 @@ def train_nn(
 
     Args:
         work_directory: 作業ディレクトリ (model.keras と metadata.json が保存される)
-        resume: True の場合、他の引数をすべて無視して work_directory 内の metadata.json から設定を読み込み学習を再開する
+        resume: True の場合、device、batch_size と出力メタデータ指定以外の引数を無視して work_directory 内の metadata.json から設定を読み込み学習を再開する
         x_file: 単一の入力特徴量 X (.npz)。分割時は x_files を指定
         y_file: 単一の正解ラベル Y (.npy)。分割時は y_files を指定
         x_files: 順序付き X チャンク一覧
@@ -347,21 +411,26 @@ def train_nn(
         patience: 改善幅 < min_delta が何エポック連続したら収束終了とするか (default: 3)
         out_model_file: モデル出力ファイルパス (省略時は {work_directory}/model.keras)
         out_meta_file: メタデータ出力ファイルパス (省略時は {work_directory}/metadata.json)
-        batch_size: ミニバッチサイズ
+        batch_size: 明示指定時は再開時も変更。省略時は新規256、再開時は保存値
         learning_rate: 学習率
         hidden_units: 隠れ層のユニット数タプル
         activation: 隠れ層の活性化関数
         dropout_rate: ドロップアウト率
+        input_mode: "dense" は計算直前に密展開、"sparse" は先頭層を直接疎計算
+        device: auto は GPU 優先、cpu は GPU 無効化、gpu は GPU 必須。再開時も指定可能
         seed: 乱数シード
 
     Returns:
         最新のメタデータ辞書
     """
+    gpu_devices = configure_training_device(device)
+    device_type = "GPU" if gpu_devices else "CPU"
+    print(f"[Device] requested={device}, selected={device_type}, gpus={gpu_devices}", flush=True)
     work_dir = Path(work_directory).resolve()
     default_meta_path = work_dir / "metadata.json"
 
     if resume:
-        # 再開モード: 他の引数は無視し、保存されている metadata.json から全設定を復元する
+        # 再開モード: device、batch_size と出力メタデータ指定以外の引数は無視し、保存されている metadata.json から全設定を復元する
         meta_path = Path(out_meta_file) if out_meta_file is not None else default_meta_path
         if not meta_path.is_file():
             raise FileNotFoundError(
@@ -378,10 +447,12 @@ def train_nn(
         resolved_meta_file = Path(metadata["outputs"]["meta_file"])
 
         params = metadata["params"]
+        input_mode = str(params.get("input_mode", "dense"))
         target_epochs = int(params["epochs"])
         min_delta = float(params.get("min_delta", DEFAULT_MIN_DELTA))
         patience = int(params.get("patience", DEFAULT_PATIENCE))
-        batch_size = int(params["batch_size"])
+        saved_batch_size = int(params["batch_size"])
+        batch_size = saved_batch_size if batch_size is None else int(batch_size)
         learning_rate = float(params["learning_rate"])
         hidden_units = tuple(int(u) for u in params["hidden_units"])
         activation = str(params["activation"])
@@ -425,7 +496,8 @@ def train_nn(
         target_epochs = int(epochs)
         min_delta = float(min_delta)
         patience = int(patience)
-        batch_size = int(batch_size)
+        batch_size = DEFAULT_BATCH_SIZE if batch_size is None else int(batch_size)
+        saved_batch_size = batch_size
         learning_rate = int(learning_rate) if isinstance(learning_rate, bool) else float(learning_rate)
         hidden_units = tuple(int(u) for u in hidden_units)
         activation = str(activation)
@@ -440,6 +512,9 @@ def train_nn(
         resume_count = 0
         prev_memory_stats = None
 
+    if input_mode not in ("dense", "sparse"):
+        raise ValueError(f"input_mode は dense または sparse を指定してください: {input_mode}")
+
     best_anchor, no_improve_count = _recompute_convergence_state(history_records, min_delta)
 
     resolved_x_files, resolved_y_files = _xy_paths(x_file, y_file, x_files, y_files)
@@ -452,8 +527,9 @@ def train_nn(
     # 一度に保持するのは1チャンクだけ。ここでは形状と総件数を検証する。
     t_load_start = time.perf_counter()
     num_samples = num_batches = max_row_nnz = 0
+    completed_chunk_batches = 0
     vocab_size = None
-    for xp, yp in zip(resolved_x_files, resolved_y_files):
+    for chunk_index, (xp, yp) in enumerate(zip(resolved_x_files, resolved_y_files)):
         x = sp.load_npz(str(xp)).tocsr()
         y = np.load(str(yp), mmap_mode="r")
         if y.ndim != 1 or x.shape[0] != y.shape[0] or x.shape[0] == 0:
@@ -463,13 +539,16 @@ def train_nn(
         vocab_size = int(x.shape[1])
         num_samples += x.shape[0]
         num_batches += math.ceil(x.shape[0] / batch_size)
+        if chunk_index < next_chunk:
+            completed_chunk_batches += math.ceil(x.shape[0] / saved_batch_size)
         x.sum_duplicates()
         max_row_nnz = max(max_row_nnz, 1, int(np.diff(x.indptr).max()))
         del x, y
+    if partial:
+        # 旧形式のチェックポイントでは、完了済みチャンクのバッチ数を保存値から復元。
+        partial.setdefault("num_batches", completed_chunk_batches)
     data_load_seconds = time.perf_counter() - t_load_start
     csr_tensor_init_seconds = 0.0
-    gpu_devices = configure_gpu_memory_growth()
-    device_type = "GPU" if gpu_devices else "CPU"
 
     tf.keras.utils.set_random_seed(seed + completed_epochs)
 
@@ -485,12 +564,15 @@ def train_nn(
             dropout_rate=dropout_rate,
             learning_rate=learning_rate,
         )
-    _attach_gpu_sparse_train_step(
-        model,
-        vocab_size=vocab_size,
-        max_row_nnz=max_row_nnz,
-        steps_per_execution=DEFAULT_STEPS_PER_EXECUTION,
-    )
+    if input_mode == "sparse":
+        _attach_direct_sparse_train_step(model)
+    else:
+        _attach_gpu_sparse_train_step(
+            model,
+            vocab_size=vocab_size,
+            max_row_nnz=max_row_nnz,
+            steps_per_execution=DEFAULT_STEPS_PER_EXECUTION,
+        )
     model_init_seconds = time.perf_counter() - t_model_init_start
 
     def _build_timing_summary() -> dict:
@@ -599,6 +681,8 @@ def train_nn(
                 "hidden_units": list(hidden_units),
                 "activation": activation,
                 "dropout_rate": dropout_rate,
+                "input_mode": input_mode,
+                "device": device,
                 "seed": seed,
             },
             "progress": {
@@ -675,6 +759,7 @@ def train_nn(
             partial["loss_sum"] = partial.get("loss_sum", 0.0) + float(hist.history["loss"][-1]) * count
             partial["accuracy_sum"] = partial.get("accuracy_sum", 0.0) + float(hist.history["accuracy"][-1]) * count
             partial["num_samples"] = partial.get("num_samples", 0) + count
+            partial["num_batches"] = partial.get("num_batches", 0) + math.ceil(count / batch_size)
             partial["train_fit_seconds"] = partial.get("train_fit_seconds", 0.0) + time.perf_counter() - t_fit_start
             cumulative_elapsed += time.perf_counter() - chunk_start
             next_chunk = chunk_index + 1
@@ -689,7 +774,8 @@ def train_nn(
         ppl_val = float(math.exp(min(loss_val, 50.0)))
         train_fit_sec = partial["train_fit_seconds"]
         shuffle_and_dataset_sec = partial.get("shuffle_and_dataset_seconds", 0.0)
-        ms_per_step = train_fit_sec / num_batches * 1000.0
+        epoch_num_batches = partial["num_batches"]
+        ms_per_step = train_fit_sec / epoch_num_batches * 1000.0
         next_chunk = 0
         partial = {}
 
@@ -739,6 +825,7 @@ def train_nn(
                 "shuffle_and_dataset_seconds": round(shuffle_and_dataset_sec, 3),
                 "train_fit_seconds": round(train_fit_sec, 3),
                 "ms_per_step": round(ms_per_step, 3),
+                "num_batches": epoch_num_batches,
                 "model_save_seconds": round(model_save_sec, 3),
                 "elapsed_seconds": round(epoch_elapsed, 3),
                 "finished_at": datetime.now(timezone.utc).isoformat(),

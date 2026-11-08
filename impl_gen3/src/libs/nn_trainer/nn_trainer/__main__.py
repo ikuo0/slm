@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="中断再開フラグ (指定時は他の引数を無視し、作業ディレクトリの metadata.json から設定を読み込んで再開する)",
+        help="中断再開フラグ (指定時は device、batch-size と出力メタデータ指定以外の引数を無視し、作業ディレクトリの metadata.json から設定を読み込んで再開する)",
     )
     parser.add_argument(
         "--x-file",
@@ -79,8 +79,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=DEFAULT_BATCH_SIZE,
-        help="ミニバッチサイズ (default: %(default)s)",
+        default=None,
+        help=f"ミニバッチサイズ。再開時も変更可能。省略時は新規{DEFAULT_BATCH_SIZE}、再開時は保存値",
     )
     parser.add_argument(
         "--learning-rate",
@@ -110,6 +110,14 @@ def main(argv: list[str] | None = None) -> int:
         default=42,
         help="乱数シード (default: %(default)s)",
     )
+    parser.add_argument(
+        "--input-mode", choices=("dense", "sparse"), default="dense",
+        help="先頭層の計算方式: dense=密展開、sparse=有効インデックスから直接計算 (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--device", choices=("auto", "cpu", "gpu"), default="auto",
+        help="実行デバイス: auto=GPU優先、cpu=CPUのみ、gpu=GPU必須。再開時も指定可能 (default: %(default)s)",
+    )
     args = parser.parse_args(argv)
 
     if not args.resume:
@@ -135,6 +143,8 @@ def main(argv: list[str] | None = None) -> int:
         batch_size=args.batch_size,
         learning_rate=args.learning_rate,
         hidden_units=hidden_units,
+        input_mode=args.input_mode,
+        device=args.device,
         activation=args.activation,
         dropout_rate=args.dropout_rate,
         seed=args.seed,
@@ -163,11 +173,14 @@ python -m nn_trainer \
   --work-directory=/tmp/job_gen3_1234/phase4_train \
   --x-file=/tmp/job_gen3_1234/phase3_featurize/x.npz \
   --y-file=/tmp/job_gen3_1234/phase3_featurize/y.npy \
+  --input-mode=sparse \
+  --device=auto \
   --epochs=50 \
   --min-delta=0.001 \
-  --patience=3
+  --patience=3 \
+  --batch-size=2048
 
-# 中断後の再開実行例 (--resume 指定時は他の引数は不要・指定されても無視して metadata.json から復元)
+# 中断後の再開実行例 (--resume 指定時はdevice、batch-size と出力メタデータ指定以外の引数は metadata.json から復元)
 PYTHONPATH=impl_gen3/src/libs/nn_trainer \
 python -m nn_trainer \
   --work-directory=/tmp/job_gen3_1234/phase4_train \
