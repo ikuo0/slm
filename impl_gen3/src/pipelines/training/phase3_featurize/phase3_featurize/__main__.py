@@ -10,6 +10,8 @@ from . import (
     DEFAULT_CONTEXT_LENGTH,
     DEFAULT_EOS_TOKEN,
     DEFAULT_NEWLINE_TOKEN,
+    DEFAULT_SEED,
+    DEFAULT_SHARD_SIZE,
     run_phase3_featurize,
 )
 
@@ -19,7 +21,8 @@ def main(argv: list[str] | None = None) -> int:
         prog="phase3_featurize",
         description=(
             "Phase 2 が出力した context.json から正規化済み共通フォーマット JSON ファイルと採用語彙ファイルを取得し、"
-            "重み付き One-Hot 特徴量 X (.npz) と正解ラベル Y (.npy) を作成して context.json を出力する"
+            "100万サンプル単位で重み付き One-Hot 特徴量 X (x_0001.npz, ...) と正解ラベル Y (y_0001.npy, ...) を作成して "
+            "フルパス一覧と全体件数を記載した context.json を出力する"
         ),
     )
     parser.add_argument(
@@ -28,14 +31,19 @@ def main(argv: list[str] | None = None) -> int:
         help="Phase 2 が出力した context.json のファイルパス (例: /tmp/job_gen3_1234/phase2_tokenize/context.json)",
     )
     parser.add_argument(
+        "--out-directory",
+        default=None,
+        help="分割ファイル (x_0001.npz, y_0001.npy, ...) の出力先ディレクトリ (省略時は --out-x-file または --out-meta-file の親ディレクトリ)",
+    )
+    parser.add_argument(
         "--out-x-file",
-        required=True,
-        help="出力する特徴量 X (CSR 疎行列) のファイルパス (.npz)",
+        default=None,
+        help="出力先指定用の特徴量 X パス (指定された場合はその親ディレクトリに x_0001.npz, ... を出力)",
     )
     parser.add_argument(
         "--out-y-file",
-        required=True,
-        help="出力する正解ラベル Y (1次元 int32 配列) のファイルパス (.npy)",
+        default=None,
+        help="出力先指定用の正解ラベル Y パス (指定された場合はその親ディレクトリに y_0001.npy, ... を出力)",
     )
     parser.add_argument(
         "--out-meta-file",
@@ -48,7 +56,19 @@ def main(argv: list[str] | None = None) -> int:
         help="次フェーズへ引き継ぐ context.json の出力ファイルパス (JSON)",
     )
 
-    # 特徴化パラメータ
+    # 特徴化・分割パラメータ
+    parser.add_argument(
+        "--shard-size",
+        type=int,
+        default=DEFAULT_SHARD_SIZE,
+        help="1ファイルあたりの最大サンプル数 (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_SEED,
+        help="文書・サンプルシャッフル用の乱数シード (default: %(default)s)",
+    )
     parser.add_argument(
         "--context-length",
         type=int,
@@ -97,7 +117,10 @@ def main(argv: list[str] | None = None) -> int:
         args.out_y_file,
         args.out_meta_file,
         args.out_context_file,
+        out_directory=args.out_directory,
         context_length=args.context_length,
+        shard_size=args.shard_size,
+        seed=args.seed,
         bos_token=args.bos_token,
         eos_token=args.eos_token,
         newline_token=args.newline_token,
@@ -108,9 +131,10 @@ def main(argv: list[str] | None = None) -> int:
 
     stats = metadata["stats"]
     print(
-        f"phase3_featurize completed: X={tuple(stats['x_shape'])} (nnz={stats['x_nnz']}), "
-        f"Y={tuple(stats['y_shape'])} from {stats['num_documents']} docs, "
-        f"{stats['num_sentences']} sentences ({metadata['elapsed_seconds']}s)"
+        f"phase3_featurize completed: {stats['num_shards']} shards "
+        f"(total_samples={stats['num_samples']:,}, vocab_size={stats['vocab_size']:,}, "
+        f"nnz={stats['x_nnz']:,}) from {stats['num_documents']:,} docs, "
+        f"{stats['num_sentences']:,} sentences ({metadata['elapsed_seconds']}s)"
     )
     print(f"context written: {args.out_context_file}")
     return 0
@@ -124,9 +148,9 @@ if __name__ == "__main__":
 PYTHONPATH=impl_gen3/src/pipelines/training/phase3_featurize \
 python -m phase3_featurize \
   --input-context-file=/tmp/job_gen3_1234/phase2_tokenize/context.json \
-  --out-x-file=/tmp/job_gen3_1234/phase3_featurize/x.npz \
-  --out-y-file=/tmp/job_gen3_1234/phase3_featurize/y.npy \
+  --out-directory=/tmp/job_gen3_1234/phase3_featurize \
   --out-meta-file=/tmp/job_gen3_1234/phase3_featurize/metadata.json \
   --out-context-file=/tmp/job_gen3_1234/phase3_featurize/context.json \
+  --shard-size=1000000 \
   --context-length=32
 """

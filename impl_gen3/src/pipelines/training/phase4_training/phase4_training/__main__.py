@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "Phase 3 が出力した context.json から X (.npz) と Y (.npy) を取得し、"
             "TensorFlow で NN モデルを学習して metadata.json と context.json を出力する "
-            "(1エポックごとに保存・収束判定・中断再開対応)"
+            "(チャンクごとに保存・再開、全チャンク完了後に収束判定)"
         ),
     )
     parser.add_argument(

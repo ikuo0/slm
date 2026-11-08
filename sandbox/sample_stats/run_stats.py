@@ -1,4 +1,4 @@
-"""chABSA・livedoor 両コーパスの一括統計集計スクリプト。
+"""chABSA・livedoor・青空文庫（aozora）3コーパスの一括統計集計スクリプト。
 
 どのカレントディレクトリからでも直接実行可能:
     python /workspaces/slm/sandbox/sample_stats/run_stats.py

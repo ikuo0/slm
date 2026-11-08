@@ -26,12 +26,14 @@ JOB_ID="${1:-${JOB_ID:-job_gen3_1234}}"
 JOB_DIR="/tmp/${JOB_ID}"
 CHABSA_ORIGIN_DIR="${REPO_ROOT}/samples/chabsa_data/data"
 LIVEDOOR_ORIGIN_DIR="${REPO_ROOT}/samples/livedoor/text"
+AOZORA_ORIGIN_DIR="${REPO_ROOT}/samples/aozora"
 
 echo "============================================================"
 echo "[impl_gen3] Starting full pipeline"
 echo "  GEN_DIR             : ${GEN_DIR}"
 echo "  CHABSA_ORIGIN_DIR   : ${CHABSA_ORIGIN_DIR}"
 echo "  LIVEDOOR_ORIGIN_DIR : ${LIVEDOOR_ORIGIN_DIR}"
+echo "  AOZORA_ORIGIN_DIR   : ${AOZORA_ORIGIN_DIR}"
 echo "  JOB_DIR             : ${JOB_DIR}"
 echo "  PYTHON_BIN          : ${PYTHON_BIN}"
 echo "============================================================"
@@ -42,6 +44,7 @@ PYTHONPATH="${PIPELINES_DIR}/phase1_preprocess" \
 "${PYTHON_BIN}" -m phase1_preprocess \
   --chabsa-directory="${CHABSA_ORIGIN_DIR}" \
   --livedoor-directory="${LIVEDOOR_ORIGIN_DIR}" \
+  --aozora-directory="${AOZORA_ORIGIN_DIR}" \
   --out-slim-file="${JOB_DIR}/phase1_preprocess/slim.json" \
   --out-normalized-file="${JOB_DIR}/phase1_preprocess/normalized.json" \
   --out-meta-file="${JOB_DIR}/phase1_preprocess/metadata.json" \

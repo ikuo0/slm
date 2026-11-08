@@ -206,7 +206,7 @@ python -m phase2_tokenize \
   --out-meta-file=/tmp/job_gen3_1234/phase2_tokenize/metadata.json \
   --out-context-file=/tmp/job_gen3_1234/phase2_tokenize/context.json \
   --vocab-size-start=1500 \
-  --vocab-size-end=8000 \
+  --vocab-size-end=20000 \
   --vocab-size-exponent=1.03 \
   --score-threshold=0.70 \
   --model-type=unigram \

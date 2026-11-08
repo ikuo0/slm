@@ -5,14 +5,15 @@ Phase 3 (weighted_onehot) で作成した疎行列 X (.npz) と正解トーク�
 
 主な特徴:
 - 終了条件として最大エポック数 (epochs) と収束判定閾値 (min_delta, patience) の両方を指定可能
-- 1 エポック完了ごとにモデル (.keras) と metadata.json をアトミックに保存する
+- チャンク完了ごとにモデルと metadata.json を保存し、全チャンク完了後に収束判定する
 - 中断・再開フラグ (resume=True / --resume) が指定された場合は、他の引数を無視して
   作業ディレクトリ内の metadata.json から設定・進捗・保存済みモデル（オプティマイザ状態含む）を
-  読み込んで続きのエポックから学習を再開する
+  読み込んで未完了チャンクから学習を再開する
 """
 
 from __future__ import annotations
 
+import gc
 import json
 import math
 import shutil
@@ -293,12 +294,28 @@ def _recompute_convergence_state(
     return best_anchor, no_improve_count
 
 
+def _xy_paths(
+    x_file: str | Path | None,
+    y_file: str | Path | None,
+    x_files: list[str | Path] | None = None,
+    y_files: list[str | Path] | None = None,
+) -> tuple[list[Path], list[Path]]:
+    """単一ファイルと順序付きチャンク一覧を共通形式へ変換する。"""
+    xs = list(x_files) if x_files is not None else ([x_file] if x_file is not None else [])
+    ys = list(y_files) if y_files is not None else ([y_file] if y_file is not None else [])
+    if not xs or len(xs) != len(ys):
+        raise ValueError("X/Y は同数の空でないファイル一覧を指定してください")
+    return [Path(x).resolve() for x in xs], [Path(y).resolve() for y in ys]
+
+
 def train_nn(
     work_directory: str | Path,
     *,
     resume: bool = False,
     x_file: str | Path | None = None,
     y_file: str | Path | None = None,
+    x_files: list[str | Path] | None = None,
+    y_files: list[str | Path] | None = None,
     epochs: int = DEFAULT_EPOCHS,
     min_delta: float = DEFAULT_MIN_DELTA,
     patience: int = DEFAULT_PATIENCE,
@@ -312,7 +329,7 @@ def train_nn(
     seed: int = 42,
     pipeline_info: dict | None = None,
 ) -> dict:
-    """NN の学習を実行し、1 エポックごとにモデルと metadata.json を保存する。
+    """NN の学習を実行し、チャンクごとにモデルと metadata.json を保存する。
 
     終了条件:
         1. completed_epochs が epochs (最大エポック数) に達した場合
@@ -321,8 +338,10 @@ def train_nn(
     Args:
         work_directory: 作業ディレクトリ (model.keras と metadata.json が保存される)
         resume: True の場合、他の引数をすべて無視して work_directory 内の metadata.json から設定を読み込み学習を再開する
-        x_file: 入力特徴量 X (.npz) のファイルパス (resume=False 時は必須)
-        y_file: 正解ラベル Y (.npy) のファイルパス (resume=False 時は必須)
+        x_file: 単一の入力特徴量 X (.npz)。分割時は x_files を指定
+        y_file: 単一の正解ラベル Y (.npy)。分割時は y_files を指定
+        x_files: 順序付き X チャンク一覧
+        y_files: X に対応する順序付き Y チャンク一覧
         epochs: 最大エポック数 (default: 50)
         min_delta: 収束判定の最小 Loss 改善幅 (0 以下で無効化、default: 0.001)
         patience: 改善幅 < min_delta が何エポック連続したら収束終了とするか (default: 3)
@@ -338,7 +357,7 @@ def train_nn(
     Returns:
         最新のメタデータ辞書
     """
-    work_dir = Path(work_directory)
+    work_dir = Path(work_directory).resolve()
     default_meta_path = work_dir / "metadata.json"
 
     if resume:
@@ -351,8 +370,10 @@ def train_nn(
         with meta_path.open(encoding="utf-8") as f:
             metadata = json.load(f)
 
-        resolved_x_file = Path(metadata["input"]["x_file"])
-        resolved_y_file = Path(metadata["input"]["y_file"])
+        x_files = metadata["input"].get("x_files")
+        y_files = metadata["input"].get("y_files")
+        x_file = metadata["input"].get("x_file")
+        y_file = metadata["input"].get("y_file")
         resolved_model_file = Path(metadata["outputs"]["model_file"])
         resolved_meta_file = Path(metadata["outputs"]["meta_file"])
 
@@ -380,21 +401,20 @@ def train_nn(
         if saved_pipeline_info and pipeline_info is None:
             pipeline_info = dict(saved_pipeline_info)
 
-        if not resolved_model_file.exists():
+        checkpoint_file = Path(metadata["outputs"].get("checkpoint_file", resolved_model_file))
+        if not checkpoint_file.exists():
             raise FileNotFoundError(
-                f"再開用の保存済みモデルが見つかりません: {resolved_model_file}"
+                f"再開用の保存済みモデルが見つかりません: {checkpoint_file}"
             )
     else:
         # 新規学習モード
-        if x_file is None or y_file is None:
+        if (x_files is None or y_files is None) and (x_file is None or y_file is None):
             raise ValueError("新規学習時 (resume=False) は x_file と y_file の指定が必須です")
         if epochs is None or int(epochs) < 1:
             raise ValueError(f"新規学習時 (resume=False) は epochs >= 1 の指定が必須です: {epochs}")
         if int(patience) < 1:
             raise ValueError(f"patience は 1 以上を指定してください: {patience}")
 
-        resolved_x_file = Path(x_file)
-        resolved_y_file = Path(y_file)
         resolved_model_file = (
             Path(out_model_file) if out_model_file is not None else work_dir / "model.keras"
         )
@@ -422,42 +442,41 @@ def train_nn(
 
     best_anchor, no_improve_count = _recompute_convergence_state(history_records, min_delta)
 
-    # データの読み込み時間計測
+    resolved_x_files, resolved_y_files = _xy_paths(x_file, y_file, x_files, y_files)
+    resolved_x_file, resolved_y_file = resolved_x_files[0], resolved_y_files[0]
+    next_chunk = int(metadata["progress"].get("next_chunk", 0)) if resume else 0
+    partial = dict(metadata["progress"].get("partial_epoch", {})) if resume else {}
+    checkpoint_file = checkpoint_file if resume else None
+    if batch_size < 1 or not 0 <= next_chunk <= len(resolved_x_files):
+        raise ValueError("batch_size または再開チャンク位置が不正です")
+    # 一度に保持するのは1チャンクだけ。ここでは形状と総件数を検証する。
     t_load_start = time.perf_counter()
-    x_csr = sp.load_npz(str(resolved_x_file)).tocsr()
-    x_csr.sum_duplicates()
-    y_arr = np.asarray(np.load(str(resolved_y_file)), dtype=np.int32)
+    num_samples = num_batches = max_row_nnz = 0
+    vocab_size = None
+    for xp, yp in zip(resolved_x_files, resolved_y_files):
+        x = sp.load_npz(str(xp)).tocsr()
+        y = np.load(str(yp), mmap_mode="r")
+        if y.ndim != 1 or x.shape[0] != y.shape[0] or x.shape[0] == 0:
+            raise ValueError(f"X/Y のサンプル数または形状が不正です: {xp}, {yp}")
+        if vocab_size is not None and x.shape[1] != vocab_size:
+            raise ValueError(f"チャンク間で語彙サイズが一致しません: {xp}")
+        vocab_size = int(x.shape[1])
+        num_samples += x.shape[0]
+        num_batches += math.ceil(x.shape[0] / batch_size)
+        x.sum_duplicates()
+        max_row_nnz = max(max_row_nnz, 1, int(np.diff(x.indptr).max()))
+        del x, y
     data_load_seconds = time.perf_counter() - t_load_start
-
-    if x_csr.shape[0] != y_arr.shape[0]:
-        raise ValueError(
-            f"X と Y のサンプル数が一致しません: X={x_csr.shape}, Y={y_arr.shape}"
-        )
-
-    num_samples = int(x_csr.shape[0])
-    vocab_size = int(x_csr.shape[1])
-    num_batches = math.ceil(num_samples / batch_size) if num_samples > 0 else 0
-    row_lengths = np.diff(x_csr.indptr)
-    max_row_nnz = max(1, int(row_lengths.max())) if row_lengths.size > 0 else 1
-
+    csr_tensor_init_seconds = 0.0
     gpu_devices = configure_gpu_memory_growth()
     device_type = "GPU" if gpu_devices else "CPU"
-
-    # CSR 1次元配列群の Tensor 化時間計測 (全件密行列化は行わず約1.1GBの疎配列のまま保持)
-    t_csr_init_start = time.perf_counter()
-    with tf.device("/CPU:0"):
-        csr_indptr_t = tf.constant(x_csr.indptr, dtype=tf.int32)
-        csr_indices_t = tf.constant(x_csr.indices, dtype=tf.int32)
-        csr_data_t = tf.constant(x_csr.data, dtype=tf.float32)
-        y_t = tf.constant(y_arr, dtype=tf.int32)
-    csr_tensor_init_seconds = time.perf_counter() - t_csr_init_start
 
     tf.keras.utils.set_random_seed(seed + completed_epochs)
 
     # モデルの構築またはロード時間計測
     t_model_init_start = time.perf_counter()
     if resume:
-        model = tf.keras.models.load_model(str(resolved_model_file))
+        model = tf.keras.models.load_model(str(checkpoint_file))
     else:
         model = build_model(
             vocab_size,
@@ -473,9 +492,6 @@ def train_nn(
         steps_per_execution=DEFAULT_STEPS_PER_EXECUTION,
     )
     model_init_seconds = time.perf_counter() - t_model_init_start
-
-    rng = np.random.default_rng(seed + completed_epochs)
-    indices = np.arange(num_samples, dtype=np.int32)
 
     def _build_timing_summary() -> dict:
         total_shuffle_sec = sum(float(r.get("shuffle_and_dataset_seconds", 0.0)) for r in history_records)
@@ -565,10 +581,13 @@ def train_nn(
             "input": {
                 "x_file": str(resolved_x_file),
                 "y_file": str(resolved_y_file),
+                "x_files": [str(p) for p in resolved_x_files],
+                "y_files": [str(p) for p in resolved_y_files],
             },
             "outputs": {
                 "work_directory": str(work_dir),
                 "model_file": str(resolved_model_file),
+                "checkpoint_file": str(checkpoint_file) if checkpoint_file else str(resolved_model_file),
                 "meta_file": str(resolved_meta_file),
             },
             "params": {
@@ -584,6 +603,9 @@ def train_nn(
             },
             "progress": {
                 "completed_epochs": completed_epochs,
+                "next_chunk": next_chunk,
+                "num_chunks": len(resolved_x_files),
+                "partial_epoch": dict(partial),
                 "target_epochs": target_epochs,
                 "remaining_epochs": max(0, target_epochs - completed_epochs),
                 "no_improve_count": no_improve_count,
@@ -611,42 +633,65 @@ def train_nn(
         _save_metadata_files(final_meta)
         return final_meta
 
-    # 初期状態の metadata.json を保存
-    _save_metadata_files(_build_metadata_dict("running", None))
+    def _commit_checkpoint(status, reason):
+        nonlocal checkpoint_file
+        previous = checkpoint_file
+        checkpoint_file = work_dir / "checkpoints" / f"epoch_{completed_epochs:04d}_chunk_{next_chunk:04d}.keras"
+        _atomic_save_model(model, checkpoint_file)
+        result = _build_metadata_dict(status, reason)
+        _save_metadata_files(result)
+        # metadata が参照するモデルを確定した後に古いチェックポイントを解放する。
+        if previous and previous != checkpoint_file and previous.parent == checkpoint_file.parent:
+            previous.unlink(missing_ok=True)
+        return result
 
-    # 1 エポックずつ学習 → 収束判定 → モデル保存 → metadata.json 更新
+    if not resume:
+        _commit_checkpoint("running", None)
+
     for current_epoch in range(completed_epochs + 1, target_epochs + 1):
         epoch_start = time.perf_counter()
+        for chunk_index in range(next_chunk, len(resolved_x_files)):
+            print(f"[Epoch {current_epoch}/{target_epochs}] chunk {chunk_index + 1}/{len(resolved_x_files)}", flush=True)
+            chunk_start = time.perf_counter()
+            x_csr = sp.load_npz(str(resolved_x_files[chunk_index])).tocsr()
+            x_csr.sum_duplicates()
+            y_arr = np.load(str(resolved_y_files[chunk_index]), mmap_mode="r")
+            count = int(x_csr.shape[0])
+            with tf.device("/CPU:0"):
+                csr_indptr_t = tf.constant(x_csr.indptr, dtype=tf.int32)
+                csr_indices_t = tf.constant(x_csr.indices, dtype=tf.int32)
+                csr_data_t = tf.constant(x_csr.data, dtype=tf.float32)
+                y_t = tf.constant(y_arr, dtype=tf.int32)
+            t_shuf_start = time.perf_counter()
+            indices = np.random.default_rng(seed + current_epoch * len(resolved_x_files) + chunk_index).permutation(count).astype(np.int32)
+            epoch_dataset = build_csr_tf_dataset(
+                indices, batch_size=batch_size, max_row_nnz=max_row_nnz,
+                csr_indptr_t=csr_indptr_t, csr_indices_t=csr_indices_t,
+                csr_data_t=csr_data_t, y_t=y_t,
+            )
+            partial["shuffle_and_dataset_seconds"] = partial.get("shuffle_and_dataset_seconds", 0.0) + time.perf_counter() - t_shuf_start
+            t_fit_start = time.perf_counter()
+            hist = model.fit(epoch_dataset, epochs=1, shuffle=False, verbose=1)
+            partial["loss_sum"] = partial.get("loss_sum", 0.0) + float(hist.history["loss"][-1]) * count
+            partial["accuracy_sum"] = partial.get("accuracy_sum", 0.0) + float(hist.history["accuracy"][-1]) * count
+            partial["num_samples"] = partial.get("num_samples", 0) + count
+            partial["train_fit_seconds"] = partial.get("train_fit_seconds", 0.0) + time.perf_counter() - t_fit_start
+            cumulative_elapsed += time.perf_counter() - chunk_start
+            next_chunk = chunk_index + 1
+            _commit_checkpoint("running", None)
+            del epoch_dataset, hist, x_csr, y_arr, indices
+            del csr_indptr_t, csr_indices_t, csr_data_t, y_t
+            gc.collect()
 
-        # インデックスのシャッフルと tf.data.Dataset の構築時間計測
-        t_shuf_start = time.perf_counter()
-        rng.shuffle(indices)
-        epoch_dataset = build_csr_tf_dataset(
-            indices,
-            batch_size=batch_size,
-            max_row_nnz=max_row_nnz,
-            csr_indptr_t=csr_indptr_t,
-            csr_indices_t=csr_indices_t,
-            csr_data_t=csr_data_t,
-            y_t=y_t,
-        )
-        shuffle_and_dataset_sec = time.perf_counter() - t_shuf_start
-
-        # NN 学習 (model.fit) 時間計測
-        t_fit_start = time.perf_counter()
-        hist = model.fit(
-            epoch_dataset,
-            epochs=current_epoch,
-            initial_epoch=current_epoch - 1,
-            shuffle=False,
-            verbose=1,
-        )
-        train_fit_sec = time.perf_counter() - t_fit_start
-        ms_per_step = (train_fit_sec / num_batches * 1000.0) if num_batches > 0 else 0.0
-
-        loss_val = float(hist.history["loss"][-1])
-        acc_val = float(hist.history["accuracy"][-1])
+        # 全チャンク完了後にだけ loss と収束を判定する。再開時も累積値を使う。
+        loss_val = partial["loss_sum"] / partial["num_samples"]
+        acc_val = partial["accuracy_sum"] / partial["num_samples"]
         ppl_val = float(math.exp(min(loss_val, 50.0)))
+        train_fit_sec = partial["train_fit_seconds"]
+        shuffle_and_dataset_sec = partial.get("shuffle_and_dataset_seconds", 0.0)
+        ms_per_step = train_fit_sec / num_batches * 1000.0
+        next_chunk = 0
+        partial = {}
 
         if best_anchor is None or (best_anchor - loss_val) >= min_delta:
             loss_improvement = None if best_anchor is None else round(best_anchor - loss_val, 6)
@@ -678,7 +723,6 @@ def train_nn(
         model_save_sec = time.perf_counter() - t_save_start
 
         epoch_elapsed = time.perf_counter() - epoch_start
-        cumulative_elapsed += epoch_elapsed
 
         epoch_mem = get_memory_stats(prev_memory_stats)
         prev_memory_stats = epoch_mem
@@ -702,8 +746,7 @@ def train_nn(
         )
 
         # metadata.json を保存
-        current_meta = _build_metadata_dict(status, stopped_reason)
-        _save_metadata_files(current_meta)
+        current_meta = _commit_checkpoint(status, stopped_reason)
 
         if status == "completed":
             return current_meta

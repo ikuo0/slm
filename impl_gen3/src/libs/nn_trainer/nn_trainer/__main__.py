@@ -23,13 +23,13 @@ def main(argv: list[str] | None = None) -> int:
         prog="nn_trainer",
         description=(
             "重み付き One-Hot 特徴量 X (.npz) と正解トークン ID Y (.npy) から "
-            "TensorFlow で NN モデルを学習する (1エポックごとに保存・収束判定・中断再開対応)"
+            "TensorFlow で NN モデルを学習する (チャンクごとに保存・再開、全チャンク完了後に収束判定)"
         ),
     )
     parser.add_argument(
         "--work-directory",
         required=True,
-        help="作業ディレクトリ (model.keras と metadata.json が1エポックごとに保存される)",
+        help="作業ディレクトリ (model.keras と metadata.json がチャンクごとに保存される)",
     )
     parser.add_argument(
         "--resume",
@@ -46,6 +46,8 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="正解ラベル Y (.npy) のファイルパス (新規学習時は必須)",
     )
+    parser.add_argument("--x-files", nargs="+", help="順序付き X チャンク一覧")
+    parser.add_argument("--y-files", nargs="+", help="順序付き Y チャンク一覧")
     parser.add_argument(
         "--epochs",
         type=int,
@@ -111,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if not args.resume:
-        if not args.x_file or not args.y_file:
+        if not ((args.x_file and args.y_file) or (args.x_files and args.y_files)):
             parser.error(
                 "新規学習時 (--resume 未指定時) は --x-file, --y-file の指定が必須です"
             )
@@ -123,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
         resume=args.resume,
         x_file=args.x_file,
         y_file=args.y_file,
+        x_files=args.x_files,
+        y_files=args.y_files,
         epochs=args.epochs,
         min_delta=args.min_delta,
         patience=args.patience,

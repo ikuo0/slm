@@ -10,6 +10,8 @@ from . import (
     DEFAULT_CONTEXT_LENGTH,
     DEFAULT_EOS_TOKEN,
     DEFAULT_NEWLINE_TOKEN,
+    DEFAULT_SEED,
+    DEFAULT_SHARD_SIZE,
     build_and_save_xy,
 )
 
@@ -18,8 +20,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="weighted_onehot",
         description=(
-            "共通フォーマットの normalized JSON と SentencePiece vocab から重み付き One-Hot 特徴量 X (.npz) と "
-            "正解トークン ID Y (.npy) を生成する"
+            "共通フォーマットの normalized JSON と SentencePiece vocab から重み付き One-Hot 特徴量 "
+            "X (x_0001.npz, ...) と正解トークン ID Y (y_0001.npy, ...) を分割生成する"
         ),
     )
     parser.add_argument(
@@ -38,19 +40,36 @@ def main(argv: list[str] | None = None) -> int:
         help="SentencePiece のモデルファイル (.model) のパス (省略時は --vocab-file と同階層の .model を自動検出)",
     )
     parser.add_argument(
+        "--out-directory",
+        default=None,
+        help="分割ファイル (x_0001.npz, y_0001.npy, ...) の出力先ディレクトリ (--out-x-file 指定時はその親ディレクトリを使用)",
+    )
+    parser.add_argument(
         "--out-x-file",
-        required=True,
-        help="出力する特徴量 X (CSR 疎行列) のファイルパス (.npz)",
+        default=None,
+        help="出力先指定用の特徴量 X パス (指定された場合はその親ディレクトリに x_0001.npz, ... を出力)",
     )
     parser.add_argument(
         "--out-y-file",
-        required=True,
-        help="出力する正解ラベル Y (1次元 int32 配列) のファイルパス (.npy)",
+        default=None,
+        help="出力先指定用の正解ラベル Y パス (指定された場合はその親ディレクトリに y_0001.npy, ... を出力)",
     )
     parser.add_argument(
         "--out-meta-file",
         default=None,
         help="メタデータ (開始終了時刻、処理時間、パラメータ、統計) の出力ファイル (JSON, 任意)",
+    )
+    parser.add_argument(
+        "--shard-size",
+        type=int,
+        default=DEFAULT_SHARD_SIZE,
+        help="1ファイルあたりの最大サンプル数 (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=DEFAULT_SEED,
+        help="文書・サンプルシャッフル用の乱数シード (default: %(default)s)",
     )
     parser.add_argument(
         "--context-length",
@@ -75,14 +94,20 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if not args.out_directory and not args.out_x_file and not args.out_y_file:
+        parser.error("--out-directory または --out-x-file のいずれかを指定してください")
+
     metadata = build_and_save_xy(
         args.normalized_file,
         args.vocab_file,
         args.out_x_file,
         args.out_y_file,
+        out_directory=args.out_directory,
         out_meta_file=args.out_meta_file,
         model_file=args.model_file,
         context_length=args.context_length,
+        shard_size=args.shard_size,
+        seed=args.seed,
         bos_token=args.bos_token,
         eos_token=args.eos_token,
         newline_token=args.newline_token,
@@ -90,8 +115,9 @@ def main(argv: list[str] | None = None) -> int:
 
     stats = metadata["stats"]
     print(
-        f"weighted_onehot saved: X={ tuple(stats['x_shape']) } (nnz={stats['x_nnz']}), "
-        f"Y={ tuple(stats['y_shape']) } from {stats['num_documents']} docs "
+        f"weighted_onehot saved: {stats['num_shards']} shards "
+        f"(total_samples={stats['num_samples']:,}, vocab_size={stats['vocab_size']:,}, "
+        f"nnz={stats['x_nnz']:,}) from {stats['num_documents']:,} docs "
         f"({metadata['elapsed_seconds']}s)"
     )
     return 0
@@ -105,9 +131,9 @@ if __name__ == "__main__":
 PYTHONPATH=impl_gen3/src/libs/weighted_onehot \
 python -m weighted_onehot \
   --normalized-file=/tmp/job_gen3_1234/phase1_preprocess/normalized.json \
-  --vocab-file=/tmp/job_gen3_1234/phase2_tokenize/vocab2344/sp.vocab \
-  --out-x-file=/tmp/job_gen3_1234/phase3_featurize/x.npz \
-  --out-y-file=/tmp/job_gen3_1234/phase3_featurize/y.npy \
+  --vocab-file=/tmp/job_gen3_1234/phase2_tokenize/vocab24915/sp.vocab \
+  --out-directory=/tmp/job_gen3_1234/phase3_featurize \
   --out-meta-file=/tmp/job_gen3_1234/phase3_featurize/metadata.json \
+  --shard-size=1000000 \
   --context-length=32
 """

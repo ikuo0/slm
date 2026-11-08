@@ -1,9 +1,11 @@
-"""chABSA・livedoor オリジナルデータ統計集計 CLI エントリポイント。
+"""chABSA・livedoor・青空文庫（aozora）オリジナルデータ統計集計 CLI エントリポイント。
 
 実行例:
     PYTHONPATH=sandbox/sample_stats python -m sample_stats
     PYTHONPATH=sandbox/sample_stats python -m sample_stats --corpus=chabsa
     PYTHONPATH=sandbox/sample_stats python -m sample_stats --corpus=livedoor
+    PYTHONPATH=sandbox/sample_stats python -m sample_stats --corpus=aozora
+    PYTHONPATH=sandbox/sample_stats python -m sample_stats --corpus=aozora --aozora-directory=samples/aozora/cards/000005
     PYTHONPATH=sandbox/sample_stats python -m sample_stats --out-json=/tmp/sample_stats.json --out-md=/tmp/sample_stats.md
 """
 
@@ -20,19 +22,20 @@ from . import analyze_corpora, format_summary_markdown
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CHABSA_DIR = _REPO_ROOT / "samples" / "chabsa_data" / "data"
 DEFAULT_LIVEDOOR_DIR = _REPO_ROOT / "samples" / "livedoor" / "text"
+DEFAULT_AOZORA_DIR = _REPO_ROOT / "samples" / "aozora"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """CLI 引数をパースする。"""
     parser = argparse.ArgumentParser(
         prog="sample_stats",
-        description="chABSA および livedoor コーパスのオリジナル状態（正規化前・SentencePiece前）の文章統計を集計する",
+        description="chABSA、livedoor、および青空文庫（aozora）コーパスのオリジナル状態（正規化前・SentencePiece前）の文章統計を集計する",
     )
     parser.add_argument(
         "--corpus",
-        choices=("all", "chabsa", "livedoor"),
+        choices=("all", "chabsa", "livedoor", "aozora"),
         default="all",
-        help="集計対象コーパス (all / chabsa / livedoor, default: all)",
+        help="集計対象コーパス (all / chabsa / livedoor / aozora, default: all)",
     )
     parser.add_argument(
         "--chabsa-directory",
@@ -45,6 +48,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=DEFAULT_LIVEDOOR_DIR,
         help=f"livedoor オリジナル text ディレクトリ (default: {DEFAULT_LIVEDOOR_DIR})",
+    )
+    parser.add_argument(
+        "--aozora-directory",
+        type=Path,
+        default=DEFAULT_AOZORA_DIR,
+        help=f"青空文庫（aozora）オリジナル text ディレクトリ (default: {DEFAULT_AOZORA_DIR})",
+    )
+    parser.add_argument(
+        "--aozora-max-files",
+        type=int,
+        default=None,
+        help="青空文庫の集計対象最大ファイル数（少数ファイルでのテスト用、省略時は全件集計）",
     )
     parser.add_argument(
         "--out-json",
@@ -67,11 +82,14 @@ def main(argv: list[str] | None = None) -> int:
 
     chabsa_dir = args.chabsa_directory if args.corpus in ("all", "chabsa") else None
     livedoor_dir = args.livedoor_directory if args.corpus in ("all", "livedoor") else None
+    aozora_dir = args.aozora_directory if args.corpus in ("all", "aozora") else None
 
     t0 = time.perf_counter()
     report = analyze_corpora(
         chabsa_dir=chabsa_dir,
         livedoor_dir=livedoor_dir,
+        aozora_dir=aozora_dir,
+        aozora_max_files=args.aozora_max_files,
     )
     elapsed = time.perf_counter() - t0
     report["elapsed_seconds"] = round(elapsed, 3)

@@ -1,6 +1,6 @@
 """Phase 1 前処理パイプライン（共通フォーマット抽出・テキスト正規化）。
 
-chABSA の origin JSON ディレクトリおよび livedoor コーパスのテキストディレクトリを入力として受け取り、
+chABSA の origin JSON ディレクトリ、livedoor コーパスのテキストディレクトリ、および青空文庫ディレクトリを入力として受け取り、
 1. 共通フォーマットへの抽出・統合 (chabsa_slim.build_slim_dataset)
    {
      "sentences": [
@@ -11,12 +11,16 @@ chABSA の origin JSON ディレクトリおよび livedoor コーパスのテ�
        {
          "original": "livedoor/topic-news/topic-news-xxx.txt",
          "lines": ["記事タイトル", "記事本文の各行..."]
+       },
+       {
+         "original": "aozora/cards/000005/files/5_ruby_21311/5_ruby_21311.txt",
+         "lines": ["青空文庫の本文各行..."]
        }
      ]
    }
 2. テキスト正規化 (text_normalizer.normalize_text)
    共通フォーマットの構造を維持したまま lines の各行を正規化する
-を順に実行して、slim.json・normalized.json・metadata.json・後続引き継ぎ用の context.json を出力する。
+を順に実行して、slim.json・normalized.json・metadata.json・後続引き継ぎ用の context.json を UTF-8 で出力する。
 """
 
 from __future__ import annotations
@@ -141,12 +145,13 @@ def run_phase1_preprocess(
     *,
     chabsa_directory: str | Path | None = None,
     livedoor_directory: str | Path | None = None,
+    aozora_directory: str | Path | None = None,
     input_directory: str | Path | None = None,
     input_context_file: str | Path | None = None,
     out_slim_meta_file: str | Path | None = None,
     out_normalized_meta_file: str | Path | None = None,
 ) -> dict:
-    """chABSA・livedoor コーパスを共通フォーマット JSON に抽出・統合し、テキスト正規化を実行して metadata.json と context.json を出力する。
+    """chABSA・livedoor・青空文庫（aozora）を共通フォーマット JSON に抽出・統合し、テキスト正規化を実行して metadata.json と context.json を出力する。
 
     Args:
         out_slim_file: 共通フォーマット抽出後の JSON ファイルパス (またはディレクトリ)
@@ -155,6 +160,7 @@ def run_phase1_preprocess(
         out_context_file: 後続フェーズへパスを引き継ぐ context.json の出力ファイルパス
         chabsa_directory: chABSA origin JSON が格納された入力ディレクトリ
         livedoor_directory: livedoor コーパスのテキストが格納された入力ディレクトリ
+        aozora_directory: 青空文庫のテキストが格納された入力ディレクトリ (例: samples/aozora)
         input_directory: chabsa_directory の別名（後方互換用）
         input_context_file: 前段の context.json がある場合に入力するファイルパス (任意)
         out_slim_meta_file: 抽出ステップ単体のメタデータ出力ファイルパス (任意)
@@ -169,10 +175,15 @@ def run_phase1_preprocess(
         else (Path(input_directory) if input_directory is not None else None)
     )
     resolved_livedoor_dir = Path(livedoor_directory) if livedoor_directory is not None else None
+    resolved_aozora_dir = Path(aozora_directory) if aozora_directory is not None else None
 
-    if resolved_chabsa_dir is None and resolved_livedoor_dir is None:
+    if (
+        resolved_chabsa_dir is None
+        and resolved_livedoor_dir is None
+        and resolved_aozora_dir is None
+    ):
         raise ValueError(
-            "chabsa_directory (または input_directory) と livedoor_directory の少なくとも一方を指定してください"
+            "chabsa_directory (または input_directory), livedoor_directory, aozora_directory の少なくとも 1 つを指定してください"
         )
 
     resolved_slim_file = _resolve_json_output_path(out_slim_file, "slim.json")
@@ -190,6 +201,7 @@ def run_phase1_preprocess(
         resolved_slim_file,
         chabsa_dir=resolved_chabsa_dir,
         livedoor_dir=resolved_livedoor_dir,
+        aozora_dir=resolved_aozora_dir,
     )
     slim_elapsed = time.perf_counter() - slim_start
     slim_finished_at = datetime.now(timezone.utc)
@@ -201,6 +213,7 @@ def run_phase1_preprocess(
         "input": {
             "chabsa_directory": str(resolved_chabsa_dir) if resolved_chabsa_dir else None,
             "livedoor_directory": str(resolved_livedoor_dir) if resolved_livedoor_dir else None,
+            "aozora_directory": str(resolved_aozora_dir) if resolved_aozora_dir else None,
         },
         "outputs": {
             "slim_file": str(resolved_slim_file),
@@ -209,9 +222,12 @@ def run_phase1_preprocess(
             "num_documents": slim_stats["num_documents"],
             "num_chabsa_documents": slim_stats["num_chabsa_documents"],
             "num_livedoor_documents": slim_stats["num_livedoor_documents"],
+            "num_aozora_documents": slim_stats["num_aozora_documents"],
+            "num_aozora_skipped_documents": slim_stats["num_aozora_skipped_documents"],
             "num_sentences": slim_stats["num_sentences"],
             "num_chabsa_sentences": slim_stats["num_chabsa_sentences"],
             "num_livedoor_sentences": slim_stats["num_livedoor_sentences"],
+            "num_aozora_sentences": slim_stats["num_aozora_sentences"],
         },
     }
     if out_slim_meta_file is not None:
@@ -271,6 +287,7 @@ def run_phase1_preprocess(
         "input": {
             "chabsa_directory": str(resolved_chabsa_dir) if resolved_chabsa_dir else None,
             "livedoor_directory": str(resolved_livedoor_dir) if resolved_livedoor_dir else None,
+            "aozora_directory": str(resolved_aozora_dir) if resolved_aozora_dir else None,
         },
         "outputs": outputs_dict,
         "steps": {
@@ -282,9 +299,12 @@ def run_phase1_preprocess(
             "num_documents": norm_stats["num_documents"],
             "num_chabsa_documents": slim_stats["num_chabsa_documents"],
             "num_livedoor_documents": slim_stats["num_livedoor_documents"],
+            "num_aozora_documents": slim_stats["num_aozora_documents"],
+            "num_aozora_skipped_documents": slim_stats["num_aozora_skipped_documents"],
             "num_sentences": norm_stats["num_sentences"],
             "num_chabsa_sentences": slim_stats["num_chabsa_sentences"],
             "num_livedoor_sentences": slim_stats["num_livedoor_sentences"],
+            "num_aozora_sentences": slim_stats["num_aozora_sentences"],
         },
     }
 
@@ -300,6 +320,7 @@ def run_phase1_preprocess(
     phase1_context = {
         "chabsa_directory": str(resolved_chabsa_dir) if resolved_chabsa_dir else None,
         "livedoor_directory": str(resolved_livedoor_dir) if resolved_livedoor_dir else None,
+        "aozora_directory": str(resolved_aozora_dir) if resolved_aozora_dir else None,
         "slim_file": str(resolved_slim_file),
         "normalized_file": str(resolved_norm_file),
         "meta_file": str(out_meta_file),

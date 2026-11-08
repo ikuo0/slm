@@ -12,8 +12,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="phase1_preprocess",
         description=(
-            "chABSA データおよび livedoor コーパスを共通フォーマット JSON に抽出・統合し、"
-            "テキスト正規化を実行して metadata.json と context.json を出力する"
+            "chABSA データ、livedoor コーパス、および青空文庫テキストを共通フォーマット JSON に抽出・統合し、"
+            "テキスト正規化を実行して metadata.json と context.json を UTF-8 で出力する"
         ),
     )
     parser.add_argument(
@@ -28,6 +28,12 @@ def main(argv: list[str] | None = None) -> int:
         dest="livedoor_directory",
         default=None,
         help="livedoor コーパスのテキストディレクトリ (例: samples/livedoor/text)",
+    )
+    parser.add_argument(
+        "--aozora-directory",
+        dest="aozora_directory",
+        default=None,
+        help="青空文庫のテキストディレクトリ (例: samples/aozora)",
     )
     parser.add_argument(
         "--out-slim-file",
@@ -70,9 +76,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if not args.chabsa_directory and not args.livedoor_directory:
+    if (
+        not args.chabsa_directory
+        and not args.livedoor_directory
+        and not args.aozora_directory
+    ):
         parser.error(
-            "--chabsa-directory (または --input-directory) と --livedoor-directory の少なくとも一方を指定してください"
+            "--chabsa-directory (または --input-directory), --livedoor-directory, --aozora-directory の少なくとも 1 つを指定してください"
         )
 
     metadata = run_phase1_preprocess(
@@ -82,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         args.out_context_file,
         chabsa_directory=args.chabsa_directory,
         livedoor_directory=args.livedoor_directory,
+        aozora_directory=args.aozora_directory,
         input_context_file=args.input_context_file,
         out_slim_meta_file=args.out_slim_meta_file,
         out_normalized_meta_file=args.out_normalized_meta_file,
@@ -90,7 +101,9 @@ def main(argv: list[str] | None = None) -> int:
     stats = metadata["stats"]
     print(
         f"phase1_preprocess completed: {stats['num_documents']} docs "
-        f"(chabsa={stats['num_chabsa_documents']}, livedoor={stats['num_livedoor_documents']}), "
+        f"(chabsa={stats['num_chabsa_documents']}, "
+        f"livedoor={stats['num_livedoor_documents']}, "
+        f"aozora={stats['num_aozora_documents']} [skipped={stats['num_aozora_skipped_documents']}]), "
         f"{stats['num_sentences']} lines ({metadata['elapsed_seconds']}s)"
     )
     print(f"context written: {args.out_context_file}")
@@ -106,6 +119,7 @@ PYTHONPATH=impl_gen3/src/pipelines/training/phase1_preprocess \
 python -m phase1_preprocess \
   --chabsa-directory=samples/chabsa_data/data \
   --livedoor-directory=samples/livedoor/text \
+  --aozora-directory=samples/aozora \
   --out-slim-file=/tmp/job_gen3_1234/phase1_preprocess/slim.json \
   --out-normalized-file=/tmp/job_gen3_1234/phase1_preprocess/normalized.json \
   --out-meta-file=/tmp/job_gen3_1234/phase1_preprocess/metadata.json \

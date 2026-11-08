@@ -2,11 +2,11 @@
 
 - 新規学習時 (resume=False):
   Phase 3 が出力した context.json から X (.npz) と Y (.npy) のファイルパスを取得し、
-  nn_trainer で 1 エポックごとにモデルと metadata.json を保存しながら学習を行い、
+  nn_trainer で チャンクごとにモデルと metadata.json を保存しながら学習を行い、
   後続フェーズ（推論・検証等）へ引き継ぐ context.json を出力する。
 - 中断再開時 (resume=True):
   他の引数を無視し、作業ディレクトリ内の metadata.json（および context.json）から
-  設定を復元して続きのエポックから学習を再開する。
+  設定を復元して未完了チャンクから学習を再開する。
 """
 
 from __future__ import annotations
@@ -66,26 +66,24 @@ def save_context(context: dict, out_context_file: str | Path) -> None:
         json.dump(context, f, ensure_ascii=False, indent=2)
 
 
-def resolve_phase3_xy_files(context: dict) -> tuple[Path, Path]:
-    """context.json から Phase 3 の x_file (.npz) と y_file (.npy) を取得する。"""
+def resolve_phase3_xy_files(context: dict) -> tuple[list[Path], list[Path]]:
+    """Phase 3 の順序付きチャンク一覧を取得する（旧単一ファイル形式も対応）。"""
     phase3 = context.get("phase3_featurize", {})
     if isinstance(phase3, dict):
-        x_str = phase3.get("x_file")
-        y_str = phase3.get("y_file")
-        if x_str and y_str:
-            return Path(x_str), Path(y_str)
-        meta_path_str = phase3.get("meta_file") or phase3.get("metadata")
-        if meta_path_str:
-            meta_path = Path(meta_path_str)
-            with meta_path.open(encoding="utf-8") as f:
-                meta = json.load(f)
-            outputs = meta.get("outputs", {})
-            if outputs.get("x_file") and outputs.get("y_file"):
-                return Path(outputs["x_file"]), Path(outputs["y_file"])
-
-    raise ValueError(
-        "context.json 内に phase3_featurize の x_file / y_file パスが見つかりません"
-    )
+        sources = [phase3]
+        meta_path = phase3.get("meta_file") or phase3.get("metadata")
+        if not (phase3.get("x_files") or phase3.get("x_file")) and meta_path:
+            with Path(meta_path).open(encoding="utf-8") as f:
+                sources.append(json.load(f).get("outputs", {}))
+        for source in sources:
+            xs, ys = source.get("x_files"), source.get("y_files")
+            if xs is not None or ys is not None:
+                if not xs or not ys or len(xs) != len(ys):
+                    raise ValueError("Phase 3 の X/Y チャンク一覧が空または件数不一致です")
+                return [Path(x) for x in xs], [Path(y) for y in ys]
+            if source.get("x_file") and source.get("y_file"):
+                return [Path(source["x_file"])], [Path(source["y_file"])]
+    raise ValueError("context.json 内に Phase 3 の X/Y パスが見つかりません")
 
 
 def run_phase4_training(
@@ -158,6 +156,8 @@ def run_phase4_training(
             "work_directory": str(work_dir),
             "x_file": metadata["input"]["x_file"],
             "y_file": metadata["input"]["y_file"],
+            "x_files": metadata["input"]["x_files"],
+            "y_files": metadata["input"]["y_files"],
             "model_file": metadata["outputs"]["model_file"],
             "meta_file": metadata["outputs"]["meta_file"],
         }
@@ -177,10 +177,12 @@ def run_phase4_training(
         context = load_context(input_context_file)
 
     if x_file is not None and y_file is not None:
-        resolved_x_file = Path(x_file)
-        resolved_y_file = Path(y_file)
+        resolved_x_files = [Path(x_file)]
+        resolved_y_files = [Path(y_file)]
     else:
-        resolved_x_file, resolved_y_file = resolve_phase3_xy_files(context)
+        if x_file is not None or y_file is not None:
+            raise ValueError("x_file と y_file は両方指定してください")
+        resolved_x_files, resolved_y_files = resolve_phase3_xy_files(context)
 
     resolved_model_file = (
         Path(out_model_file) if out_model_file is not None else work_dir / "model.keras"
@@ -200,8 +202,10 @@ def run_phase4_training(
     phase4_context = {
         "input_context_file": str(input_context_file) if input_context_file is not None else None,
         "work_directory": str(work_dir),
-        "x_file": str(resolved_x_file),
-        "y_file": str(resolved_y_file),
+        "x_file": str(resolved_x_files[0]),
+        "x_files": [str(p) for p in resolved_x_files],
+        "y_file": str(resolved_y_files[0]),
+        "y_files": [str(p) for p in resolved_y_files],
         "model_file": str(resolved_model_file),
         "meta_file": str(resolved_meta_file),
     }
@@ -215,8 +219,8 @@ def run_phase4_training(
     metadata = train_nn(
         work_dir,
         resume=False,
-        x_file=resolved_x_file,
-        y_file=resolved_y_file,
+        x_files=resolved_x_files,
+        y_files=resolved_y_files,
         epochs=epochs,
         min_delta=min_delta,
         patience=patience,
